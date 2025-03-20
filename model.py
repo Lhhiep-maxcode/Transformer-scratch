@@ -17,13 +17,14 @@ class PositionalEncoding(nn.Module):
         self.d_model = d_model
         self.seq_len = seq_len
         self.dropout = nn.Dropout(dropout)
-        self.pe = torch.zeros(seq_len, d_model)
+        pe = torch.zeros(seq_len, d_model)
         position = torch.arange(0, seq_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * -(torch.log(torch.tensor(10000.0)) / d_model))
-        self.pe[:, 0::2] = torch.sin(position * div_term)
-        self.pe[:, 1::2] = torch.cos(position * div_term)
-        self.pe = self.pe.unsqueeze(0) # add batch dimension (batch, seq_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = self.pe.unsqueeze(0) # add batch dimension (batch, seq_len, d_model)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1)]
+        x = x + (self.pe[:, :x.size(1), :]).requires_grad_(False)
         return self.dropout(x)
