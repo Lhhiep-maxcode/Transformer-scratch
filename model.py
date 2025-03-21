@@ -11,6 +11,7 @@ class InputEmbeddings(nn.Module):
     def forward(self, x):
         return self.embedding(x) * torch.sqrt(torch.tensor(self.d_model))
     
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, seq_len: int, dropout: float = 0.1):
         super().__init__()
@@ -29,6 +30,7 @@ class PositionalEncoding(nn.Module):
         x = x + (self.pe[:, :x.size(1), :]).requires_grad_(False)
         return self.dropout(x)
     
+
 class LayerNormalization(nn.Module):
     def __init__(self, esp: float = 1e-6):
         super().__init__()
@@ -42,6 +44,7 @@ class LayerNormalization(nn.Module):
         std = x.std(dim=-1, keepdim=True)
         return self.gamma * (x - mean) / (std + self.esp) + self.beta
     
+
 class FeedForwardBlock(nn.Module):
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
@@ -53,6 +56,7 @@ class FeedForwardBlock(nn.Module):
         # x shape: (batch, seq_len, d_model) -> (batch, seq_len, d_ff) -> (batch, seq_len, d_model)
         return self.fc2(self.dropout(torch.relu(self.fc1(x))))
     
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model: int, seq_len: int, n_heads: int, dropout: float = 0.1):
         super().__inti__()
@@ -98,3 +102,13 @@ class MultiHeadAttention(nn.Module):
         # (batch, n_heads, seq_len, d_k) --> (batch, seq_len, n_heads, d_k) --> (batch, seq_len, d_model)
         x = x.transpose(1, 2).contiguous().view(-1, self.seq_len, self.d_model)
         return self.w_o(x)
+    
+
+class ResidualConnection(nn.Module):
+    def __init__(self, dropout: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = LayerNormalization()
+
+    def forward(self, x, sublayer):
+        return x + self.dropout(sublayer(self.norm(x)))
