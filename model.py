@@ -52,3 +52,49 @@ class FeedForwardBlock(nn.Module):
     def forward(self, x):
         # x shape: (batch, seq_len, d_model) -> (batch, seq_len, d_ff) -> (batch, seq_len, d_model)
         return self.fc2(self.dropout(torch.relu(self.fc1(x))))
+    
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model: int, seq_len: int, n_heads: int, dropout: float = 0.1):
+        super().__inti__()
+        self.d_model = d_model
+        self.seq_len = seq_len
+        self.n_heads = n_heads
+        assert d_model % n_heads == 0, f'd_model = {self.d_model} should be divisible by n_heads = {self.n_heads}'
+
+        self.d_k = self.d_model // self.n_heads
+        self.w_q = nn.Linear(self.d_model, self.d_model)
+        self.w_k = nn.Linear(self.d_model, self.d_model)
+        self.w_v = nn.Linear(self.d_model, self.d_model)
+        self.w_o = nn.Linear(self.d_model, self.d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    @staticmethod
+    def attention(self, query, key, value, mask=None, dropout=None):
+        d_k = query.size(-1)
+        # (batch, n_heads, seq_len, d_k) x (batch, n_heads, d_k, seq_len) -> (batch, n_heads, seq_len, seq_len))
+        scores = torch.matmul(query, key.transpose(-2, -1)) / torch.sqrt(torch.tensor(d_k))
+        if mask is not None:
+            scores = scores.masked_fill_(mask == 0, -1e9)
+        
+        # (batch, n_heads, seq_len, seq_len) --> (batch, n_heads, seq_len, seq_len)
+        attention_score = scores.softmax(dim=-1) # softmax along the last dimension (sum of the last dimension = 1)
+        if dropout is not None:
+            attention_score = dropout(attention_score)
+        
+        # (batch, n_heads, seq_len, d_k), (batch, n_heads, seq_len, seq_len)
+        return torch.matmul(attention_score, value), attention_score
+
+    def forward(self, q, k, v, mask):
+        query = self.w_q(q) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
+        key = self.w_k(k)   # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
+        value = self.w_v(v) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
+
+        # (batch, seq_len, d_model) --> (batch, seq_len, n_heads, d_k) --> (batch, n_heads, seq_len, d_k)
+        query = query.view(-1, self.seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        key = key.view(-1, self.seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        value = value.view(-1, self.seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        x, attention_score = MultiHeadAttention.attention(query, key, value, mask, self.dropout)
+
+        # (batch, n_heads, seq_len, d_k) --> (batch, seq_len, n_heads, d_k) --> (batch, seq_len, d_model)
+        x = x.transpose(1, 2).contiguous().view(-1, self.seq_len, self.d_model)
+        return self.w_o(x)
