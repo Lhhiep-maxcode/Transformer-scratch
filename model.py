@@ -156,4 +156,51 @@ class DecoderBlock(nn.Module):
         x = self.residual_connections[2](x, self.feedforward)
         return x
 
-        
+
+class Decoder(nn.Module):
+    def __init__(self, layers: nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+    
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, encoder_output, src_mask, tgt_mask)
+        return self.norm(x)
+    
+
+class ProjectionLayer(nn.Module):
+    """
+    The final layer of the Transformer model projecting the output of the decoder to the vocabulary size
+    """
+    def __init__(self, d_model, vocab_size):
+        super().__init__()
+        self.proj = nn.Linear(d_model, vocab_size)
+    
+    def forward(self, x):
+        # (Batch, seq_len, d_model) --> (Batch, seq_len, vocab_size)
+        return torch.log_softmax(self.proj(x), dim=-1)
+    
+
+class Transformer(nn.Module):
+    def __init__(self, encoder: Encoder, decoder: Decoder, src_embed: nn.Module, tgt_embed: nn.Module, 
+                 src_pos: PositionalEncoding, tgt_pos: PositionalEncoding, projection_layer: nn.Module):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.src_embed = src_embed
+        self.tgt_embed = tgt_embed
+        self.src_pos = src_pos
+        self.tgt_pos = tgt_pos
+        self.projection_layer = projection_layer
+    
+    def encode(self, src, src_mask):
+        src = self.src_embed(src)
+        src = self.src_pos(src)
+        return self.encoder(src, src_mask)
+    
+    def decode(self, encoder_output, src_mask, tgt, tgt_mask):
+        tgt = self.tgt_embed(tgt)
+        tgt = self.tgt_pos(tgt)
+        return self.decoder(tgt, encoder_output, src_mask, tgt_mask)
+    
