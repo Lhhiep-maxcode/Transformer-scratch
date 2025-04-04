@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import warnings
 import torchmetrics
+import gc
 from datasets import load_dataset
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
@@ -267,6 +268,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
 
 
 def train_model(config):
+    gc.collect()
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.has_mps or torch.backends.mps.is_available() else "cpu"
     print("Using device:", device)
     if (device == 'cuda'):
@@ -307,7 +309,9 @@ def train_model(config):
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
     for epoch in range(initial_epoch, config['num_epochs']):
-        torch.cuda.empty_cache()
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
         for batch in batch_iterator:
