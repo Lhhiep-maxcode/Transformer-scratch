@@ -266,6 +266,14 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
         writer.add_scalar('beam search - validation bleu', bleu, global_step)
         writer.flush()
 
+        print('-----Evaluation-----')
+        print('| greedy search - validation cer', cer)
+        print('| greedy search - validation wer', wer)
+        print('| greedy search - validation bleu', bleu)
+        print('| beam search - validation cer', cer)
+        print('| beam search - validation wer', wer)
+        print('| beam search - validation bleu', wer)
+
 
 def train_model(config):
     gc.collect()
@@ -314,6 +322,7 @@ def train_model(config):
 
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
+        losses = []
         for batch in batch_iterator:
             encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
             decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
@@ -333,6 +342,8 @@ def train_model(config):
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
+            losses.append(loss.item())
+
             # Log the loss
             writer.add_scalar('train loss', loss.item(), global_step)
             writer.flush()
@@ -346,6 +357,7 @@ def train_model(config):
 
             global_step += 1
 
+        print('| Average Training-Loss : {:.4f}'.format(torch.mean(torch.tensor(losses))))
         run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), global_step, writer, config)
 
         # Save the model at the end of every epoch
