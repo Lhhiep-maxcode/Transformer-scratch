@@ -56,8 +56,8 @@ def get_or_build_tokenizer(config, dataset, lang):
 
 def get_ds(config):
     ds_raw = load_dataset("kaitchup/opus-Vietnamese-to-English")
-    ds_raw_train = ds_raw['train']
-    ds_raw_valid = ds_raw['validation']
+    ds_raw_train = [data for data in ds_raw['train']]
+    ds_raw_valid = [data for data in ds_raw['validation']]
 
     # get tokenizer
     tokenizer_src = get_or_build_tokenizer(config, ds_raw_train, 'vi')
@@ -86,8 +86,8 @@ def get_ds(config):
     if config_seq_len < max_found_seq_len:
         raise Exception(f"Max founded sequence length is {max_found_seq_len}, but config seq_len is {config_seq_len}. Please increase the config seq_len.")
     
-    train_ds = BilingualDataset(ds_raw_train, tokenizer_src, tokenizer_tgt, config['seq_len'])
-    val_ds = BilingualDataset(ds_raw_valid, tokenizer_src, tokenizer_tgt, config['seq_len'])
+    train_ds = BilingualDataset(ds_raw_train[:config['train_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
+    val_ds = BilingualDataset(ds_raw_valid[:config['val_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
 
     train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True)
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True)
@@ -188,7 +188,7 @@ def greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_t
     return decoder_input.squeeze(0)   # (seq_len)
 
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, num_examples=2):
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, config, num_examples=2):
     model.eval()
     count = 0
     
@@ -208,7 +208,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
             assert encoder_input.size(0) == 1, "Batch size must be 1"
 
             model_out_greedy = greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
-            model_out_beam = beam_search(model, 5, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            model_out_beam = beam_search(model, config['beam_size'], encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
 
             source_text = batch["src_text"][0]
             target_text = batch["tgt_text"][0]
@@ -339,7 +339,7 @@ def train_model(config):
 
             global_step += 1
 
-        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), global_step, writer)
+        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), global_step, config, writer)
 
         # Save the model at the end of every epoch
         model_filename = get_weights_file_path(config, f"{epoch:02d}")

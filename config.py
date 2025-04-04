@@ -3,11 +3,14 @@ import re
 
 def get_config():
     return {
+        "train_size": 100000,   # set -1 to get all
+        "val_size": -1,     # set -1 to get all
         "batch_size": 8,
         "num_epochs": 20,
         "lr": 1e-3,
         "seq_len": 150,
         "d_model": 512,
+        "beam_size": 5,
         "lang_src": "vi",
         "lang_tgt": "en",
         "preload": "latest",
