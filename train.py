@@ -102,6 +102,63 @@ def get_model(config, vocab_src_len, vocab_tgt_len):
     return model
 
 
+def beam_search(model, beam_size, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device):
+    sos_id = tokenizer_tgt.token_to_id('[SOS]')
+    eos_id = tokenizer_tgt.token_to_id('[EOS]')
+    pad_id = tokenizer_tgt.token_to_id('[PAD]')
+
+    # Precompute the encoder output and reuse it for every step
+    encoder_output = model.encode(encoder_input, encoder_mask)
+    # Initialize the decoder input with the sos token
+    decoder_initial_input = torch.empty(1, 1).fill_(sos_id).type_as(encoder_input).to(device)
+
+    # Create a candidate list
+    # (generated text, score)
+    candidates = [(decoder_initial_input, 1)]
+
+    while True:
+
+        # If a candidate has reached the maximum length, it means we have run the decoding for at least max_len iterations, so stop the search
+        if any([cand.size(1) == max_len for cand, _ in candidates]):
+            break
+        
+        new_candidates = []
+
+        for candidate, score in candidates:
+
+            # Do not expand candidates that have reached the eos token
+            if candidate[0][-1].item() == eos_id:
+                continue
+
+            # Build the candidate's mask
+            candidate_mask = causal_mask(candidate.size(1)).type_as(encoder_mask).to(device) # (1, length of sequence, length of sequence)
+            out = model.decode(encoder_output, encoder_mask, candidate, candidate_mask)
+            # get next token probabilities
+            prob = model.project(out[:, -1])    # (batch, d_model)
+            # get the top k candidates
+            topk_prob, topk_idx = torch.topk(prob, beam_size, dim=-1)
+            for i in range(beam_size):
+                # for each of the top k candidates, get the token and its probability
+                # hardcode for evaluation with batch size = 1
+                token = topk_idx[0][i].unsqueeze(0).unsqueeze(0)    # (1, 1)   
+                token_prob = topk_prob[0][i].item()
+                new_candidate = torch.cat([candidate, token], dim=1)     # (1, length of generated sequence + 1)
+                # We sum the log probabilities because the probabilities are in log space
+                new_candidates.append((new_candidate, score + token_prob))
+
+        # Sort the new candidates by their score
+        candidates = sorted(new_candidates, key=lambda x: x[1], reverse=True)
+        # Keep only the top k candidates
+        candidates = candidates[:beam_size]
+
+         # If all the candidates have reached the eos token, stop
+        if all([cand[0][-1].item() == eos_id for cand, _ in candidates]):
+            break
+
+    # Return the best candidate
+    return candidates[0][0].squeeze(0)  # (seq_len)
+
+
 def greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_id = tokenizer_tgt.token_to_id('[SOS]')
     eos_id = tokenizer_tgt.token_to_id('[EOS]')
@@ -115,9 +172,9 @@ def greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_t
         
         decoder_mask = causal_mask(decoder_input.size(1)).type_as(encoder_mask).to(device) # (1, length of sequence, length of sequence)
         decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (batch, length of sequence, d_model)
-
+        # print("Decoder out", decoder_output.shape)
         # get next token
-        prob = model.project(decoder_output[:, -1]) # (batch, 1, d_model)
+        prob = model.project(decoder_output[:, -1]) # (batch, d_model)
         # print("Probability", prob.shape)
         _, next_word = torch.max(prob, dim=-1)
         # print("Next word", next_word)
@@ -128,7 +185,7 @@ def greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_t
         if next_word == eos_id:
             break
 
-    return decoder_input.squeeze(0)
+    return decoder_input.squeeze(0)   # (seq_len)
 
 
 def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, num_examples=2):
@@ -137,7 +194,8 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
     
     source_texts = []
     expected = []
-    predicted = []
+    predicted_greedy = []
+    predicted_beam = []
 
     console_width = 80
 
@@ -149,20 +207,25 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
 
             assert encoder_input.size(0) == 1, "Batch size must be 1"
 
-            model_out = greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            model_out_greedy = greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            model_out_beam = beam_search(model, 5, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+
             source_text = batch["src_text"][0]
             target_text = batch["tgt_text"][0]
-            model_out_text = tokenizer_tgt.decode(model_out.detach().cpu().numpy())
+            model_out_text_greedy = tokenizer_tgt.decode(model_out_greedy.detach().cpu().numpy())
+            model_out_text_beam = tokenizer_tgt.decode(model_out_beam.detach().cpu().numpy())
 
             source_texts.append(source_text)
             expected.append(target_text)
-            predicted.append(model_out_text)
+            predicted_greedy.append(model_out_text_greedy)
+            predicted_beam.append(model_out_text_beam)
 
             # Print the source, target and model output
             print_msg('-'*console_width)
             print_msg(f"{f'SOURCE: ':>12}{source_text}")
             print_msg(f"{f'TARGET: ':>12}{target_text}")
-            print_msg(f"{f'PREDICTED: ':>12}{model_out_text}")
+            print_msg(f"{f'PREDICTED GREEDY: ':>12}{model_out_text_greedy}")
+            print_msg(f"{f'PREDICTED BEAM: ':>12}{model_out_text_beam}")
 
             if count == num_examples:
                 print_msg('-'*console_width)
@@ -170,18 +233,33 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
 
     if writer:
         metric = torchmetrics.CharErrorRate()
-        cer = metric(predicted, expected)
-        writer.add_scalar('validation cer', cer, global_step)
+        cer = metric(predicted_greedy, expected)
+        writer.add_scalar('greedy search - validation cer', cer, global_step)
         writer.flush()
 
         metric = torchmetrics.WordErrorRate()
-        wer = metric(predicted, expected)
-        writer.add_scalar('validation wer', wer, global_step)
+        wer = metric(predicted_greedy, expected)
+        writer.add_scalar('greedy search - validation wer', wer, global_step)
         writer.flush()
 
         metric = torchmetrics.BLEUScore()
-        bleu = metric(predicted, expected)
-        writer.add_scalar('validation bleu', bleu, global_step)
+        bleu = metric(predicted_greedy, expected)
+        writer.add_scalar('greedy search - validation bleu', bleu, global_step)
+        writer.flush()
+
+        metric = torchmetrics.CharErrorRate()
+        cer = metric(predicted_beam, expected)
+        writer.add_scalar('beam search - validation cer', cer, global_step)
+        writer.flush()
+
+        metric = torchmetrics.WordErrorRate()
+        wer = metric(predicted_beam, expected)
+        writer.add_scalar('beam search - validation wer', wer, global_step)
+        writer.flush()
+
+        metric = torchmetrics.BLEUScore()
+        bleu = metric(predicted_beam, expected)
+        writer.add_scalar('beam search - validation bleu', bleu, global_step)
         writer.flush()
 
 
