@@ -89,6 +89,9 @@ def get_ds(config):
     train_ds = BilingualDataset(ds_raw_train[:config['train_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
     val_ds = BilingualDataset(ds_raw_valid[:config['val_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
 
+    print(f"Training size: {len(train_ds)} sentences")
+    print(f"Validation size: {len(val_ds)} sentences")
+
     train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True)
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True)
 
