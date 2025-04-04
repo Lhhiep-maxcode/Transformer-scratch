@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import warnings
+import torchmetrics
 from datasets import load_dataset
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
@@ -101,6 +102,89 @@ def get_model(config, vocab_src_len, vocab_tgt_len):
     return model
 
 
+def greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device):
+    sos_id = tokenizer_tgt.token_to_id('[SOS]')
+    eos_id = tokenizer_tgt.token_to_id('[EOS]')
+    pad_id = tokenizer_tgt.token_to_id('[PAD]')
+
+    encoder_output = model.encode(encoder_input, encoder_mask)
+    decoder_input = torch.empty((1, 1)).fill_(sos_id).type_as(encoder_input).to(device) # (batch, 1)
+    while True:
+        if decoder_input.size(1) == max_len:
+            break
+        
+        decoder_mask = causal_mask(decoder_input.size(1)).type_as(encoder_mask).to(device) # (1, length of sequence, length of sequence)
+        decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (batch, length of sequence, d_model)
+
+        # get next token
+        prob = model.project(decoder_output[:, -1]) # (batch, 1, d_model)
+        # print("Probability", prob.shape)
+        _, next_word = torch.max(prob, dim=-1)
+        # print("Next word", next_word)
+        decoder_input = torch.cat(
+            [decoder_input, torch.empty((1, 1)).type_as(decoder_input).fill_(next_word.item()).to(device)], dim=1
+        )
+
+        if next_word == eos_id:
+            break
+
+    return decoder_input.squeeze(0)
+
+
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, num_examples=2):
+    model.eval()
+    count = 0
+    
+    source_texts = []
+    expected = []
+    predicted = []
+
+    console_width = 80
+
+    with torch.no_grad():
+        for batch in validation_ds:
+            count += 1
+            encoder_input = batch["encoder_input"].to(device) # (batch, seq_len)
+            encoder_mask = batch["encoder_mask"].to(device) # (batch, 1, 1, seq_len) => (batch, heads, seq_len, seq_len)
+
+            assert encoder_input.size(0) == 1, "Batch size must be 1"
+
+            model_out = greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            source_text = batch["src_text"][0]
+            target_text = batch["tgt_text"][0]
+            model_out_text = tokenizer_tgt.decode(model_out.detach().cpu().numpy())
+
+            source_texts.append(source_text)
+            expected.append(target_text)
+            predicted.append(model_out_text)
+
+            # Print the source, target and model output
+            print_msg('-'*console_width)
+            print_msg(f"{f'SOURCE: ':>12}{source_text}")
+            print_msg(f"{f'TARGET: ':>12}{target_text}")
+            print_msg(f"{f'PREDICTED: ':>12}{model_out_text}")
+
+            if count == num_examples:
+                print_msg('-'*console_width)
+                break
+
+    if writer:
+        metric = torchmetrics.CharErrorRate()
+        cer = metric(predicted, expected)
+        writer.add_scalar('validation cer', cer, global_step)
+        writer.flush()
+
+        metric = torchmetrics.WordErrorRate()
+        wer = metric(predicted, expected)
+        writer.add_scalar('validation wer', wer, global_step)
+        writer.flush()
+
+        metric = torchmetrics.BLEUScore()
+        bleu = metric(predicted, expected)
+        writer.add_scalar('validation bleu', bleu, global_step)
+        writer.flush()
+
+
 def train_model(config):
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.has_mps or torch.backends.mps.is_available() else "cpu"
     print("Using device:", device)
@@ -176,6 +260,8 @@ def train_model(config):
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
+
+        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), global_step, writer)
 
         # Save the model at the end of every epoch
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
