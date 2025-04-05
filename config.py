@@ -13,7 +13,7 @@ def get_config():
         "beam_size": 5,
         "lang_src": "vi",
         "lang_tgt": "en",
-        "preload": "latest",
+        "preload_path": None,
         "model_folder": "weights",
         "model_basename": "tmodel_",
         "tokenizer_file": "tokenizer_{0}.json",
