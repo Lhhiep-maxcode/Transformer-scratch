@@ -272,7 +272,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
         print('| greedy search - validation bleu', bleu)
         print('| beam search - validation cer', cer)
         print('| beam search - validation wer', wer)
-        print('| beam search - validation bleu', wer)
+        print('| beam search - validation bleu', bleu)
 
 
 def train_model(config):
