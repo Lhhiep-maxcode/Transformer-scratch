@@ -106,6 +106,13 @@ def get_model(config, vocab_src_len, vocab_tgt_len):
     return model
 
 
+def count_parameters(model):
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total parameters: {total}")
+    print(f"Trainable parameters: {trainable}")
+
+
 def beam_search(model, beam_size, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_id = tokenizer_tgt.token_to_id('[SOS]')
     eos_id = tokenizer_tgt.token_to_id('[EOS]')
@@ -294,6 +301,7 @@ def train_model(config):
     Path(f"{config['model_folder']}").mkdir(parents=True, exist_ok=True)
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
+    count_parameters(model)
     # Tensorboard
     writer = SummaryWriter(config['experiment_name'])
 
