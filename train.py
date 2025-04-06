@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import warnings
-import torchmetrics
 import gc
+from torchmetrics.text import CharErrorRate, WordErrorRate, BLEUScore
 from datasets import load_dataset
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
@@ -243,32 +243,32 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
                 break
 
     if writer:
-        metric = torchmetrics.CharErrorRate()
+        metric = CharErrorRate()
         cer = metric(predicted_greedy, expected)
         writer.add_scalar('greedy search - validation cer', cer, global_step)
         writer.flush()
 
-        metric = torchmetrics.WordErrorRate()
+        metric = WordErrorRate()
         wer = metric(predicted_greedy, expected)
         writer.add_scalar('greedy search - validation wer', wer, global_step)
         writer.flush()
 
-        metric = torchmetrics.BLEUScore()
+        metric = BLEUScore()
         bleu = metric(predicted_greedy, expected)
         writer.add_scalar('greedy search - validation bleu', bleu, global_step)
         writer.flush()
 
-        metric = torchmetrics.CharErrorRate()
+        metric = CharErrorRate()
         cer = metric(predicted_beam, expected)
         writer.add_scalar('beam search - validation cer', cer, global_step)
         writer.flush()
 
-        metric = torchmetrics.WordErrorRate()
+        metric = WordErrorRate()
         wer = metric(predicted_beam, expected)
         writer.add_scalar('beam search - validation wer', wer, global_step)
         writer.flush()
 
-        metric = torchmetrics.BLEUScore()
+        metric = BLEUScore()
         bleu = metric(predicted_beam, expected)
         writer.add_scalar('beam search - validation bleu', bleu, global_step)
         writer.flush()
