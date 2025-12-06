@@ -48,7 +48,7 @@ def get_or_build_tokenizer(config, dataset, lang):
     if not Path.exists(tokenizer_path):
         tokenizer = Tokenizer(WordLevel(unk_token='[UNK]'))
         tokenizer.pre_tokenizer = Whitespace()
-        trainer = WordLevelTrainer(show_progess=True, special_tokens=['[UNK]', '[PAD]', '[SOS]', '[EOS]'], min_frequency=2)
+        trainer = WordLevelTrainer(show_progress=True, special_tokens=['[UNK]', '[PAD]', '[SOS]', '[EOS]'], min_frequency=2)
         tokenizer.train_from_iterator(get_all_sentences(dataset, lang), trainer=trainer)
         tokenizer.save(str(tokenizer_path))
     else:
@@ -87,8 +87,12 @@ def get_ds(config):
     if config_seq_len < max_found_seq_len:
         raise Exception(f"Max founded sequence length is {max_found_seq_len}, but config seq_len is {config_seq_len}. Please increase the config seq_len.")
     
-    train_ds = BilingualDataset(ds_raw_train[:config['train_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
-    val_ds = BilingualDataset(ds_raw_valid[:config['val_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
+    # Handle -1 for getting all data
+    train_size = len(ds_raw_train) if config['train_size'] == -1 else min(config['train_size'], len(ds_raw_train))
+    val_size = len(ds_raw_valid) if config['val_size'] == -1 else min(config['val_size'], len(ds_raw_valid))
+    
+    train_ds = BilingualDataset(ds_raw_train[:train_size], tokenizer_src, tokenizer_tgt, config['seq_len'])
+    val_ds = BilingualDataset(ds_raw_valid[:val_size], tokenizer_src, tokenizer_tgt, config['seq_len'])
 
     print(f"Training size: {len(train_ds)} sentences")
     print(f"Validation size: {len(val_ds)} sentences")
@@ -124,8 +128,8 @@ def beam_search(model, beam_size, encoder_input, encoder_mask, tokenizer_src, to
     decoder_initial_input = torch.empty(1, 1).fill_(sos_id).type_as(encoder_input).to(device)
 
     # Create a candidate list
-    # (generated text, score)
-    candidates = [(decoder_initial_input, 1)]
+    # (generated text, cumulative log probability score)
+    candidates = [(decoder_initial_input, 0.0)]  # Start with log(1) = 0
 
     while True:
 
@@ -137,37 +141,45 @@ def beam_search(model, beam_size, encoder_input, encoder_mask, tokenizer_src, to
 
         for candidate, score in candidates:
 
-            # Do not expand candidates that have reached the eos token
+            # If candidate already reached EOS, keep it as-is without expanding
             if candidate[0][-1].item() == eos_id:
+                new_candidates.append((candidate, score))
                 continue
 
             # Build the candidate's mask
             candidate_mask = causal_mask(candidate.size(1)).type_as(encoder_mask).to(device) # (1, length of sequence, length of sequence)
             out = model.decode(encoder_output, encoder_mask, candidate, candidate_mask)
-            # get next token probabilities
-            prob = model.project(out[:, -1])    # (batch, d_model)
+            # get next token probabilities (apply log_softmax to get log probabilities)
+            prob = model.project(out[:, -1])    # (batch, vocab_size) - raw logits
+            log_prob = torch.log_softmax(prob, dim=-1)  # Convert to log probabilities
             # get the top k candidates
-            topk_prob, topk_idx = torch.topk(prob, beam_size, dim=-1)
+            topk_log_prob, topk_idx = torch.topk(log_prob, beam_size, dim=-1)
             for i in range(beam_size):
                 # for each of the top k candidates, get the token and its probability
                 # hardcode for evaluation with batch size = 1
                 token = topk_idx[0][i].unsqueeze(0).unsqueeze(0)    # (1, 1)   
-                token_prob = topk_prob[0][i].item()
+                token_log_prob = topk_log_prob[0][i].item()
                 new_candidate = torch.cat([candidate, token], dim=1)     # (1, length of generated sequence + 1)
-                # We sum the log probabilities because the probabilities are in log space
-                new_candidates.append((new_candidate, score + token_prob))
+                # Sum the log probabilities (equivalent to multiplying probabilities)
+                new_candidates.append((new_candidate, score + token_log_prob))
 
         # Sort the new candidates by their score
         candidates = sorted(new_candidates, key=lambda x: x[1], reverse=True)
         # Keep only the top k candidates
         candidates = candidates[:beam_size]
+        
+        # If no candidates left (all reached EOS), break
+        if len(candidates) == 0:
+            break
 
          # If all the candidates have reached the eos token, stop
         if all([cand[0][-1].item() == eos_id for cand, _ in candidates]):
             break
 
-    # Return the best candidate
-    return candidates[0][0].squeeze(0)  # (seq_len)
+    # Return the best candidate with length normalization
+    # Normalize scores by length to avoid favoring shorter sequences
+    best_candidate = max(candidates, key=lambda x: x[1] / (x[0].size(1) ** 0.6))
+    return best_candidate[0].squeeze(0) 
 
 
 def greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device):
@@ -183,11 +195,12 @@ def greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_t
         
         decoder_mask = causal_mask(decoder_input.size(1)).type_as(encoder_mask).to(device) # (1, length of sequence, length of sequence)
         decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (batch, length of sequence, d_model)
-        # print("Decoder out", decoder_output.shape)
-        # get next token
-        prob = model.project(decoder_output[:, -1]) # (batch, d_model)
-        # print("Probability", prob.shape)
-        _, next_word = torch.max(prob, dim=-1)
+        # get next token probabilities
+        logits = model.project(decoder_output[:, -1]) # (batch, vocab_size) - raw logits
+        # Apply softmax to get probability distribution
+        probs = torch.softmax(logits, dim=-1)
+        # Select token with highest probability
+        _, next_word = torch.max(probs, dim=-1)
         # print("Next word", next_word)
         decoder_input = torch.cat(
             [decoder_input, torch.empty((1, 1)).type_as(decoder_input).fill_(next_word.item()).to(device)], dim=1
@@ -243,43 +256,49 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
                 break
 
     if writer:
+        # Greedy search metrics
         metric = CharErrorRate()
-        cer = metric(predicted_greedy, expected)
-        writer.add_scalar('greedy search - validation cer', cer, global_step)
+        cer_greedy = metric(predicted_greedy, expected)
+        writer.add_scalar('greedy search - validation cer', cer_greedy, global_step)
         writer.flush()
 
         metric = WordErrorRate()
-        wer = metric(predicted_greedy, expected)
-        writer.add_scalar('greedy search - validation wer', wer, global_step)
+        wer_greedy = metric(predicted_greedy, expected)
+        writer.add_scalar('greedy search - validation wer', wer_greedy, global_step)
         writer.flush()
 
+        # BLEU requires tokenized text - split into words
         metric = BLEUScore()
-        bleu = metric(predicted_greedy, expected)
-        writer.add_scalar('greedy search - validation bleu', bleu, global_step)
+        predicted_greedy_tokenized = [pred.split() for pred in predicted_greedy]
+        expected_tokenized = [[ref.split()] for ref in expected]  
+        bleu_greedy = metric(predicted_greedy_tokenized, expected_tokenized)
+        writer.add_scalar('greedy search - validation bleu', bleu_greedy, global_step)
         writer.flush()
 
+        # Beam search metrics
         metric = CharErrorRate()
-        cer = metric(predicted_beam, expected)
-        writer.add_scalar('beam search - validation cer', cer, global_step)
+        cer_beam = metric(predicted_beam, expected)
+        writer.add_scalar('beam search - validation cer', cer_beam, global_step)
         writer.flush()
 
         metric = WordErrorRate()
-        wer = metric(predicted_beam, expected)
-        writer.add_scalar('beam search - validation wer', wer, global_step)
+        wer_beam = metric(predicted_beam, expected)
+        writer.add_scalar('beam search - validation wer', wer_beam, global_step)
         writer.flush()
 
         metric = BLEUScore()
-        bleu = metric(predicted_beam, expected)
-        writer.add_scalar('beam search - validation bleu', bleu, global_step)
+        predicted_beam_tokenized = [pred.split() for pred in predicted_beam]
+        bleu_beam = metric(predicted_beam_tokenized, expected_tokenized)
+        writer.add_scalar('beam search - validation bleu', bleu_beam, global_step)
         writer.flush()
 
         print('-----Evaluation-----')
-        print('| greedy search - validation cer', cer)
-        print('| greedy search - validation wer', wer)
-        print('| greedy search - validation bleu', bleu)
-        print('| beam search - validation cer', cer)
-        print('| beam search - validation wer', wer)
-        print('| beam search - validation bleu', bleu)
+        print('| greedy search - validation cer', cer_greedy)
+        print('| greedy search - validation wer', wer_greedy)
+        print('| greedy search - validation bleu', bleu_greedy)
+        print('| beam search - validation cer', cer_beam)
+        print('| beam search - validation wer', wer_beam)
+        print('| beam search - validation bleu', bleu_beam)
 
 
 def train_model(config):
@@ -305,7 +324,37 @@ def train_model(config):
     # Tensorboard
     writer = SummaryWriter(config['experiment_name'])
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
+    # AdamW with weight decay instead of Adam
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=config['lr'], 
+        betas=(0.9, 0.98),  
+        eps=1e-9,
+        weight_decay=config.get('weight_decay', 0.01)
+    )
+
+    # Learning rate scheduler with warmup
+    def get_lr_scheduler(optimizer, warmup_steps, base_lr):
+        """Simple linear warmup scheduler"""
+        def lr_lambda(step):
+            if step == 0:
+                return 0.0
+            if step < warmup_steps:
+                # Linear warmup
+                return float(step) / float(max(1, warmup_steps))
+            # Constant LR after warmup
+            return 1.0
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    
+    # Choose scheduler based on config
+    if config.get('use_cosine_scheduler', False):
+        total_steps = len(train_dataloader) * config['num_epochs']
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
+    else:
+        scheduler = get_lr_scheduler(optimizer, config.get('warmup_steps', 4000), config['lr'])
+
+    # Mixed precision training
+    scaler = torch.amp.GradScaler('cuda') if config.get('mixed_precision', True) and device.type == 'cuda' else None
 
     # If the user specified a model to preload before training, load it
     initial_epoch = 0
@@ -317,11 +366,16 @@ def train_model(config):
         model.load_state_dict(state['model_state_dict'])
         initial_epoch = state['epoch'] + 1
         optimizer.load_state_dict(state['optimizer_state_dict'])
+        if 'scheduler_state_dict' in state:
+            scheduler.load_state_dict(state['scheduler_state_dict'])
         global_step = state['global_step']
     else:
         print('No model to preload, starting from scratch')
 
-    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
+    loss_fn = nn.CrossEntropyLoss(
+        ignore_index=tokenizer_src.token_to_id('[PAD]'), 
+        label_smoothing=config.get('label_smoothing', 0.1)
+    ).to(device)
 
     for epoch in range(initial_epoch, config['num_epochs']):
         if device == "cuda":
@@ -330,39 +384,70 @@ def train_model(config):
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
         losses = []
-        for batch in batch_iterator:
+        gradient_accumulation_steps = config.get('gradient_accumulation_steps', 1)
+        
+        for batch_idx, batch in enumerate(batch_iterator):
             encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
             decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
             encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
             decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
 
-            # Run the tensors through the encoder, decoder and the projection layer
-            encoder_output = model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
-            decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
-            proj_output = model.project(decoder_output) # (B, seq_len, vocab_size)
+            # Mixed precision training
+            if scaler is not None:
+                with torch.amp.autocast('cuda'):
+                    # Run the tensors through the encoder, decoder and the projection layer
+                    encoder_output = model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
+                    decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
+                    proj_output = model.project(decoder_output) # (B, seq_len, vocab_size)
 
-            # Compare the output with the label
-            label = batch['label'].to(device) # (B, seq_len)
+                    # Compare the output with the label
+                    label = batch['label'].to(device) # (B, seq_len)
 
-            # Compute the loss using a simple cross entropy
-            # loss((B * seq_len, vocab_size), (B * seq_len))
-            loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
-            batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
+                    # Compute the loss using cross entropy
+                    loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
+                    # Scale loss for gradient accumulation
+                    loss = loss / gradient_accumulation_steps
+                
+                # Backpropagate with scaled gradients
+                scaler.scale(loss).backward()
+            else:
+                # Standard training without mixed precision
+                encoder_output = model.encode(encoder_input, encoder_mask)
+                decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask)
+                proj_output = model.project(decoder_output)
+                label = batch['label'].to(device)
+                loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
+                loss = loss / gradient_accumulation_steps
+                loss.backward()
+            
+            # Update progress bar with actual loss (not scaled)
+            actual_loss = loss.item() * gradient_accumulation_steps
+            batch_iterator.set_postfix({"loss": f"{actual_loss:6.3f}", "lr": f"{scheduler.get_last_lr()[0]:.2e}"})
+            losses.append(actual_loss)
 
-            losses.append(loss.item())
-
-            # Log the loss
-            writer.add_scalar('train loss', loss.item(), global_step)
-            writer.flush()
-
-            # Backpropagate the loss
-            loss.backward()
-
-            # Update the weights
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-
-            global_step += 1
+            # Update weights after accumulating gradients
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                if scaler is not None:
+                    # Gradient clipping
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.get('gradient_clip', 1.0))
+                    # Update weights
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    # Gradient clipping for non-mixed precision
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.get('gradient_clip', 1.0))
+                    optimizer.step()
+                
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+                
+                # Log the loss and learning rate
+                writer.add_scalar('train loss', actual_loss, global_step)
+                writer.add_scalar('learning rate', scheduler.get_last_lr()[0], global_step)
+                writer.flush()
+                
+                global_step += 1
 
         print('| Average Training-Loss : {:.4f}'.format(torch.mean(torch.tensor(losses))))
         run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), global_step, writer, config)
@@ -373,6 +458,7 @@ def train_model(config):
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             'global_step': global_step
         }, model_filename)
     

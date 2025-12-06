@@ -3,11 +3,11 @@ import re
 
 def get_config():
     return {
-        "train_size": 100000,   # set -1 to get all
-        "val_size": -1,     # set -1 to get all
-        "batch_size": 8,
-        "num_epochs": 20,
-        "lr": 1e-3,
+        "train_size": 50000,  
+        "val_size": 2000,   
+        "batch_size": 16, 
+        "num_epochs": 30, 
+        "lr": 1e-3, 
         "seq_len": 150,
         "d_model": 512,
         "beam_size": 5,
@@ -17,7 +17,15 @@ def get_config():
         "model_folder": "weights",
         "model_basename": "tmodel_",
         "tokenizer_file": "tokenizer_{0}.json",
-        "experiment_name": "runs/tmodel"
+        "experiment_name": "runs/tmodel",
+        # Training optimizations
+        "gradient_clip": 1.0, 
+        "warmup_steps": 4000,
+        "gradient_accumulation_steps": 1,
+        "mixed_precision": False, 
+        "label_smoothing": 0.1, 
+        "weight_decay": 0.01, 
+        "use_cosine_scheduler": False 
     }
 
 def get_weights_file_path(config, epoch: int):
