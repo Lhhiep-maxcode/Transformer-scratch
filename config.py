@@ -17,7 +17,13 @@ def get_config():
         "model_folder": "weights",
         "model_basename": "tmodel_",
         "tokenizer_file": "tokenizer_{0}.json",
-        "experiment_name": "runs/tmodel"
+        "experiment_name": "runs/tmodel",
+        # wandb log
+        "wandb_key": "__apikey__",
+        "wandb_project_name": "Transformer from scratch",
+        "wandb_experiment_name": "Init experiment",
+        "wandb_experiment_id": None,
+        
     }
 
 def get_weights_file_path(config, epoch: int):
