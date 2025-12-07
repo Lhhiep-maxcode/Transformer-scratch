@@ -20,7 +20,7 @@ def get_config():
         "tokenizer_file": "tokenizer_{0}.json",
         "experiment_name": "runs/tmodel",
         # wandb log
-        "wandb_key": "__apikey__",
+        "wandb_key": None,
         "wandb_project_name": "Transformer from scratch",
         "wandb_experiment_name": "Init experiment",
         "wandb_experiment_id": None,

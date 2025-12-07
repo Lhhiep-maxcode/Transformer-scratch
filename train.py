@@ -175,25 +175,25 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
         log_path="validation_log.txt", epoch=epoch
     )
 
+    metric = CharErrorRate()
+    g_cer = metric(predicted_greedy, expected)
+
+    metric = WordErrorRate()
+    g_wer = metric(predicted_greedy, expected)
+
+    metric = BLEUScore()
+    g_bleu = metric(predicted_greedy, expected)
+
+    metric = CharErrorRate()
+    b_cer = metric(predicted_beam, expected)
+
+    metric = WordErrorRate()
+    b_wer = metric(predicted_beam, expected)
+
+    metric = BLEUScore()
+    b_bleu = metric(predicted_beam, expected)
+
     if wandb_run:
-        metric = CharErrorRate()
-        g_cer = metric(predicted_greedy, expected)
-
-        metric = WordErrorRate()
-        g_wer = metric(predicted_greedy, expected)
-
-        metric = BLEUScore()
-        g_bleu = metric(predicted_greedy, expected)
-
-        metric = CharErrorRate()
-        b_cer = metric(predicted_beam, expected)
-
-        metric = WordErrorRate()
-        b_wer = metric(predicted_beam, expected)
-
-        metric = BLEUScore()
-        b_bleu = metric(predicted_beam, expected)
-
         wandb_run.log({
             'greedy search - validation cer': g_cer,
             'greedy search - validation wer': g_wer,
@@ -203,13 +203,13 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
             'beam search - validation bleu': b_bleu,
         })
 
-        print('-----Evaluation-----')
-        print('| greedy search - validation cer', g_cer)
-        print('| greedy search - validation wer', g_wer)
-        print('| greedy search - validation bleu', g_bleu)
-        print('| beam search - validation cer', b_cer)
-        print('| beam search - validation wer', b_wer)
-        print('| beam search - validation bleu', b_bleu)
+    print('-----Evaluation-----')
+    print('| greedy search - validation cer', g_cer)
+    print('| greedy search - validation wer', g_wer)
+    print('| greedy search - validation bleu', g_bleu)
+    print('| beam search - validation cer', b_cer)
+    print('| beam search - validation wer', b_wer)
+    print('| beam search - validation bleu', b_bleu)
 
 
 def train_model(config):
@@ -236,22 +236,24 @@ def train_model(config):
     # Logout
     wandb.login(key=config['wandb_key'])
 
-    run = wandb.init(
-        project=config['wandb_project_name'],  # Specify your project
-        name=config['wandb_experiment_name'],
-        id=config['wandb_experiment_id'],
-        resume=("must" if config['wandb_experiment_id'] else None),
-        config={                        
-            # Track hyperparameters and metadata
-            "train_size": config['train_size'],
-            "epochs": config['num_epochs'], 
-            "batch_size": config['batch_size'],
-            "lr": config['lr'],
-            "max_seq_len": config['seq_len'],
-            "hidden_dim": config['d_model'],
-            "beam_size": config['beam_size'],      
-        },
-    )
+    if config['wandb_key'] is not None:
+        wandb.login(key=config['wandb_key'])
+        run = wandb.init(
+            project=config['wandb_project_name'],  # Specify your project
+            name=config['wandb_experiment_name'],
+            id=config['wandb_experiment_id'],
+            resume=("must" if config['wandb_experiment_id'] else None),
+            config={                        
+                # Track hyperparameters and metadata
+                "train_size": config['train_size'],
+                "epochs": config['num_epochs'], 
+                "batch_size": config['batch_size'],
+                "lr": config['lr'],
+                "max_seq_len": config['seq_len'],
+                "hidden_dim": config['d_model'],
+                "beam_size": config['beam_size'],      
+            },
+        )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
 
@@ -300,7 +302,7 @@ def train_model(config):
             losses.append(loss.item())
 
             # Log the loss
-            if global_step % 10 == 0:
+            if global_step % 10 == 0 and config['wandb_key'] is not None:
                 run.log({'Train loss (10 steps)': loss.item()})
 
             # Backpropagate the loss
@@ -314,8 +316,11 @@ def train_model(config):
 
         avg_loss = torch.mean(torch.tensor(losses))
         print('| Average Training-Loss : {:.4f}'.format(avg_loss))
-        run.log({'Train loss (epoch)': avg_loss})
-        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), epoch, global_step, run, config)
+        if config['wandb_key'] is not None:
+            run.log({'Train loss (epoch)': avg_loss})
+            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), epoch, global_step, run, config)
+        else:
+            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), epoch, global_step, None, config)
 
         # Save the model at the end of every epoch
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
