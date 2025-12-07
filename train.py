@@ -162,7 +162,7 @@ def log_validation_results(
             f.write("TARGET:   " + tgt + "\n")
             f.write("GREEDY:   " + greedy + "\n")
             f.write("BEAM:     " + beam + "\n")
-            f.write("-----------------------------------------------------------\n")
+            f.write("\n")
 
 
 def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, epoch, global_step, wandb_run, config, num_examples=5):
