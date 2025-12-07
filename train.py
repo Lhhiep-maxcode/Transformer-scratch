@@ -15,11 +15,27 @@ from tokenizers.pre_tokenizers import Whitespace
 from dataset import BilingualDataset, causal_mask
 from torch.utils.data import Dataset, DataLoader, random_split
 from model import build_transformer
-from torch.utils.tensorboard import SummaryWriter
 from config import get_config, get_weights_file_path, latest_weights_file_path
 from tqdm import tqdm
 from infer import greedy_search, beam_search
 from pathlib import Path
+
+import random
+import numpy as np
+import torch
+import os
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
 
 
 def get_or_build_tokenizer(config, sentences, lang):
@@ -46,6 +62,7 @@ def shuffle_parallel_lists(en, vi, seed=42):
 
 
 def get_ds(config):
+    print('='*10, 'Data Preparation', '='*10)
     en_list = []
     vi_list = []
     for path in config['data_path']:
@@ -53,33 +70,50 @@ def get_ds(config):
         en_list.extend(df['English'].to_list())
         vi_list.extend(df['Vietnamese'].to_list())
     
-    en_list, vi_list = shuffle_parallel_lists(en_list, vi_list, seed=42)
+    en_list, vi_list = shuffle_parallel_lists(en_list, vi_list, seed=config['random_seed'])
 
     # get tokenizer
     tokenizer_tgt = get_or_build_tokenizer(config, vi_list, 'vi')
     tokenizer_src = get_or_build_tokenizer(config, en_list, 'en')
     
-    max_len_src = 0
-    max_len_tgt = 0
+    total_data = len(en_list)
 
-    for vi, en in zip(vi_list, en_list):
-        vi_ids = tokenizer_tgt.encode(vi).ids
-        en_ids = tokenizer_src.encode(en).ids
-        max_len_src = max(max_len_src, len(vi_ids))
-        max_len_tgt = max(max_len_tgt, len(en_ids))
+    # filter out sentences' length > config['seq_len']
+    filtered_en_list = []
+    filtered_vi_list = []
+    for en, vi in zip(en_list, vi_list):
+        if len(tokenizer_src.encode(en).ids) > config['seq_len']:
+            continue
+        if len(tokenizer_tgt.encode(vi).ids) > config['seq_len']:
+            continue
+
+        filtered_en_list.append(en)
+        filtered_vi_list.append(vi)
     
-    config_seq_len = config['seq_len']
-    max_found_seq_len = max(max_len_src, max_len_tgt)
+    en_list = filtered_en_list
+    vi_list = filtered_vi_list
 
-    if config_seq_len < max_found_seq_len:
-        raise Exception(f"Max founded sequence length is {max_found_seq_len}, but config seq_len is {config_seq_len}. Please increase the config seq_len.")
+    print(f"Filter and get {len(en_list)} / {total_data} sentences")
+    print("Data Example:")
+    count = 0
+    for i in range(1, 6):
+        print(f"English:     ", en_list[i])
+        print(f"Vietnamese:  ", vi_list[i])
+        print()
+        print(f"English:     ", en_list[-i])
+        print(f"Vietnamese:  ", vi_list[-i])
+        print()
+        count += 1
+        if count > 5:
+            break
+
     
     # Train, valid split
-    train_en = en_list[:config['train_size']]
-    train_vi = vi_list[:config['train_size']]
+    train_en = en_list[:int(config['train_size'] * len(en_list))]
+    train_vi = vi_list[:int(config['train_size'] * len(en_list))]
 
-    val_en = en_list[config['train_size']:(config['train_size'] + config['val_size'])]
-    val_vi = vi_list[config['train_size']:(config['train_size'] + config['val_size'])]
+    val_en = en_list[int(config['train_size'] * len(en_list)):int((config['train_size'] + config['val_size']) * len(en_list))]
+    val_vi = vi_list[int(config['train_size'] * len(en_list)):int((config['train_size'] + config['val_size']) * len(en_list))]
 
     train_ds = BilingualDataset(train_en, train_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
     val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
@@ -88,7 +122,9 @@ def get_ds(config):
     print(f"Validation size: {len(val_ds)} sentences")
 
     train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, drop_last=True)
-    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True)
+    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
+
+    print('='*30)
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
     
@@ -213,6 +249,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
 
 
 def train_model(config):
+    set_seed(config['random_seed'])
     gc.collect()
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.has_mps or torch.backends.mps.is_available() else "cpu"
     print("Using device:", device)
