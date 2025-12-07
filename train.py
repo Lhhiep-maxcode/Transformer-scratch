@@ -163,7 +163,7 @@ def log_validation_results(
             f.write("-----------------------------------------------------------\n")
 
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, epoch, global_step, wandb_run, config, num_examples=2):
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, epoch, global_step, wandb_run, config, num_examples=5):
     model.eval()
     count = 0
     
