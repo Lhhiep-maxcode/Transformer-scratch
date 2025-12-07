@@ -3,8 +3,9 @@ import re
 
 def get_config():
     return {
-        "train_size": 100000,   # set -1 to get all
-        "val_size": -1,     # set -1 to get all
+        "data_path": [],
+        "train_size": 100000,   
+        "val_size": -1,     
         "batch_size": 8,
         "num_epochs": 20,
         "lr": 1e-3,
@@ -17,7 +18,13 @@ def get_config():
         "model_folder": "weights",
         "model_basename": "tmodel_",
         "tokenizer_file": "tokenizer_{0}.json",
-        "experiment_name": "runs/tmodel"
+        "experiment_name": "runs/tmodel",
+        # wandb log
+        "wandb_key": None,
+        "wandb_project_name": "Transformer from scratch",
+        "wandb_experiment_name": "Init experiment",
+        "wandb_experiment_id": None,
+        
     }
 
 def get_weights_file_path(config, epoch: int):

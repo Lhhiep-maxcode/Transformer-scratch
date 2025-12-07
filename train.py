@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import warnings
 import gc
+import torch.nn.functional as F
+import wandb
+import pandas as pd
+import random
 from torchmetrics.text import CharErrorRate, WordErrorRate, BLEUScore
 from datasets import load_dataset
 from tokenizers import Tokenizer
@@ -14,70 +18,53 @@ from model import build_transformer
 from torch.utils.tensorboard import SummaryWriter
 from config import get_config, get_weights_file_path, latest_weights_file_path
 from tqdm import tqdm
-
-
+from infer import greedy_search, beam_search
 from pathlib import Path
 
-def text_split(data):
-    """
-    Example data: {'text': 'Nó cần có... ###>It needs a...'}
-    """
-    vi, en = data['text'].split("###>")
-    vi = vi.strip()
-    en = en.strip()
-    return vi, en
 
-
-def get_all_sentences(dataset, lang):
-    """
-    dataset: dataset get from huggingface
-    lang: 
-        'vi' - Vietnamese
-        'en' - English
-    """
-    for data in dataset:
-        vi, en = text_split(data)
-        sentence = vi
-        if lang == 'en':
-            sentence = en
-        yield sentence
-
-
-def get_or_build_tokenizer(config, dataset, lang):
+def get_or_build_tokenizer(config, sentences, lang):
     tokenizer_path = Path(config['tokenizer_file'].format(lang))
     if not Path.exists(tokenizer_path):
         tokenizer = Tokenizer(WordLevel(unk_token='[UNK]'))
         tokenizer.pre_tokenizer = Whitespace()
-        trainer = WordLevelTrainer(show_progess=True, special_tokens=['[UNK]', '[PAD]', '[SOS]', '[EOS]'], min_frequency=2)
-        tokenizer.train_from_iterator(get_all_sentences(dataset, lang), trainer=trainer)
+        trainer = WordLevelTrainer(show_progress=True, special_tokens=['[UNK]', '[PAD]', '[SOS]', '[EOS]'], min_frequency=2)
+        tokenizer.train_from_iterator(sentences, trainer=trainer)
         tokenizer.save(str(tokenizer_path))
     else:
         tokenizer = Tokenizer.from_file(str(tokenizer_path))
     return tokenizer
 
+
+def shuffle_parallel_lists(en, vi, seed=42):
+    assert len(en) == len(vi), "Lists must have the same length"
+
+    paired = list(zip(en, vi))
+    random.Random(seed).shuffle(paired)
+
+    en_shuffled, vi_shuffled = zip(*paired)
+    return list(en_shuffled), list(vi_shuffled)
+
+
 def get_ds(config):
-    ds_raw = load_dataset("kaitchup/opus-Vietnamese-to-English")
-    ds_raw_train = [data for data in ds_raw['train']]
-    ds_raw_valid = [data for data in ds_raw['validation']]
+    en_list = []
+    vi_list = []
+    for path in config['data_path']:
+        df = pd.read_csv(path)
+        en_list.extend(df['English'].to_list())
+        vi_list.extend(df['Vietnamese'].to_list())
+    
+    en_list, vi_list = shuffle_parallel_lists(en_list, vi_list, seed=42)
 
     # get tokenizer
-    tokenizer_src = get_or_build_tokenizer(config, ds_raw_train, 'vi')
-    tokenizer_tgt = get_or_build_tokenizer(config, ds_raw_train, 'en')
+    tokenizer_tgt = get_or_build_tokenizer(config, vi_list, 'vi')
+    tokenizer_src = get_or_build_tokenizer(config, en_list, 'en')
     
     max_len_src = 0
     max_len_tgt = 0
 
-    for data in ds_raw_train:
-        vi, en = text_split(data)
-        vi_ids = tokenizer_src.encode(vi).ids
-        en_ids = tokenizer_tgt.encode(en).ids
-        max_len_src = max(max_len_src, len(vi_ids))
-        max_len_tgt = max(max_len_tgt, len(en_ids))
-
-    for data in ds_raw_valid:
-        vi, en = text_split(data)
-        vi_ids = tokenizer_src.encode(vi).ids
-        en_ids = tokenizer_tgt.encode(en).ids
+    for vi, en in zip(vi_list, en_list):
+        vi_ids = tokenizer_tgt.encode(vi).ids
+        en_ids = tokenizer_src.encode(en).ids
         max_len_src = max(max_len_src, len(vi_ids))
         max_len_tgt = max(max_len_tgt, len(en_ids))
     
@@ -87,13 +74,20 @@ def get_ds(config):
     if config_seq_len < max_found_seq_len:
         raise Exception(f"Max founded sequence length is {max_found_seq_len}, but config seq_len is {config_seq_len}. Please increase the config seq_len.")
     
-    train_ds = BilingualDataset(ds_raw_train[:config['train_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
-    val_ds = BilingualDataset(ds_raw_valid[:config['val_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
+    # Train, valid split
+    train_en = en_list[:config['train_size']]
+    train_vi = vi_list[:config['train_size']]
+
+    val_en = en_list[config['train_size']:(config['train_size'] + config['val_size'])]
+    val_vi = vi_list[config['train_size']:(config['train_size'] + config['val_size'])]
+
+    train_ds = BilingualDataset(train_en, train_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
+    val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
 
     print(f"Training size: {len(train_ds)} sentences")
     print(f"Validation size: {len(val_ds)} sentences")
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True)
+    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, drop_last=True)
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True)
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
@@ -113,93 +107,27 @@ def count_parameters(model):
     print(f"Trainable parameters: {trainable}")
 
 
-def beam_search(model, beam_size, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device):
-    sos_id = tokenizer_tgt.token_to_id('[SOS]')
-    eos_id = tokenizer_tgt.token_to_id('[EOS]')
-    pad_id = tokenizer_tgt.token_to_id('[PAD]')
+def log_validation_results(
+    source_texts, expected, predicted_greedy, predicted_beam, 
+    log_path="validation_log.txt", epoch=None
+):
+    # Open file in append mode
+    with open(log_path, "a", encoding="utf-8") as f:
 
-    # Precompute the encoder output and reuse it for every step
-    encoder_output = model.encode(encoder_input, encoder_mask)
-    # Initialize the decoder input with the sos token
-    decoder_initial_input = torch.empty(1, 1).fill_(sos_id).type_as(encoder_input).to(device)
+        # Optional: write epoch header
+        if epoch is not None:
+            f.write(f"\n\n====================== EPOCH {epoch} ======================\n\n")
 
-    # Create a candidate list
-    # (generated text, score)
-    candidates = [(decoder_initial_input, 1)]
-
-    while True:
-
-        # If a candidate has reached the maximum length, it means we have run the decoding for at least max_len iterations, so stop the search
-        if any([cand.size(1) == max_len for cand, _ in candidates]):
-            break
-        
-        new_candidates = []
-
-        for candidate, score in candidates:
-
-            # Do not expand candidates that have reached the eos token
-            if candidate[0][-1].item() == eos_id:
-                continue
-
-            # Build the candidate's mask
-            candidate_mask = causal_mask(candidate.size(1)).type_as(encoder_mask).to(device) # (1, length of sequence, length of sequence)
-            out = model.decode(encoder_output, encoder_mask, candidate, candidate_mask)
-            # get next token probabilities
-            prob = model.project(out[:, -1])    # (batch, d_model)
-            # get the top k candidates
-            topk_prob, topk_idx = torch.topk(prob, beam_size, dim=-1)
-            for i in range(beam_size):
-                # for each of the top k candidates, get the token and its probability
-                # hardcode for evaluation with batch size = 1
-                token = topk_idx[0][i].unsqueeze(0).unsqueeze(0)    # (1, 1)   
-                token_prob = topk_prob[0][i].item()
-                new_candidate = torch.cat([candidate, token], dim=1)     # (1, length of generated sequence + 1)
-                # We sum the log probabilities because the probabilities are in log space
-                new_candidates.append((new_candidate, score + token_prob))
-
-        # Sort the new candidates by their score
-        candidates = sorted(new_candidates, key=lambda x: x[1], reverse=True)
-        # Keep only the top k candidates
-        candidates = candidates[:beam_size]
-
-         # If all the candidates have reached the eos token, stop
-        if all([cand[0][-1].item() == eos_id for cand, _ in candidates]):
-            break
-
-    # Return the best candidate
-    return candidates[0][0].squeeze(0)  # (seq_len)
+        # Write each sample
+        for src, tgt, greedy, beam in zip(source_texts, expected, predicted_greedy, predicted_beam):
+            f.write("SRC:      " + src + "\n")
+            f.write("TARGET:   " + tgt + "\n")
+            f.write("GREEDY:   " + greedy + "\n")
+            f.write("BEAM:     " + beam + "\n")
+            f.write("-----------------------------------------------------------\n")
 
 
-def greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device):
-    sos_id = tokenizer_tgt.token_to_id('[SOS]')
-    eos_id = tokenizer_tgt.token_to_id('[EOS]')
-    pad_id = tokenizer_tgt.token_to_id('[PAD]')
-
-    encoder_output = model.encode(encoder_input, encoder_mask)
-    decoder_input = torch.empty((1, 1)).fill_(sos_id).type_as(encoder_input).to(device) # (batch, 1)
-    while True:
-        if decoder_input.size(1) == max_len:
-            break
-        
-        decoder_mask = causal_mask(decoder_input.size(1)).type_as(encoder_mask).to(device) # (1, length of sequence, length of sequence)
-        decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (batch, length of sequence, d_model)
-        # print("Decoder out", decoder_output.shape)
-        # get next token
-        prob = model.project(decoder_output[:, -1]) # (batch, d_model)
-        # print("Probability", prob.shape)
-        _, next_word = torch.max(prob, dim=-1)
-        # print("Next word", next_word)
-        decoder_input = torch.cat(
-            [decoder_input, torch.empty((1, 1)).type_as(decoder_input).fill_(next_word.item()).to(device)], dim=1
-        )
-
-        if next_word == eos_id:
-            break
-
-    return decoder_input.squeeze(0)   # (seq_len)
-
-
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, config, num_examples=2):
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, epoch, global_step, wandb_run, config, num_examples=2):
     model.eval()
     count = 0
     
@@ -242,44 +170,46 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
                 print_msg('-'*console_width)
                 break
 
-    if writer:
-        metric = CharErrorRate()
-        cer = metric(predicted_greedy, expected)
-        writer.add_scalar('greedy search - validation cer', cer, global_step)
-        writer.flush()
+    log_validation_results(
+        source_texts, expected, predicted_greedy, predicted_beam, 
+        log_path="validation_log.txt", epoch=epoch
+    )
 
-        metric = WordErrorRate()
-        wer = metric(predicted_greedy, expected)
-        writer.add_scalar('greedy search - validation wer', wer, global_step)
-        writer.flush()
+    metric = CharErrorRate()
+    g_cer = metric(predicted_greedy, expected)
 
-        metric = BLEUScore()
-        bleu = metric(predicted_greedy, expected)
-        writer.add_scalar('greedy search - validation bleu', bleu, global_step)
-        writer.flush()
+    metric = WordErrorRate()
+    g_wer = metric(predicted_greedy, expected)
 
-        metric = CharErrorRate()
-        cer = metric(predicted_beam, expected)
-        writer.add_scalar('beam search - validation cer', cer, global_step)
-        writer.flush()
+    metric = BLEUScore()
+    g_bleu = metric(predicted_greedy, expected)
 
-        metric = WordErrorRate()
-        wer = metric(predicted_beam, expected)
-        writer.add_scalar('beam search - validation wer', wer, global_step)
-        writer.flush()
+    metric = CharErrorRate()
+    b_cer = metric(predicted_beam, expected)
 
-        metric = BLEUScore()
-        bleu = metric(predicted_beam, expected)
-        writer.add_scalar('beam search - validation bleu', bleu, global_step)
-        writer.flush()
+    metric = WordErrorRate()
+    b_wer = metric(predicted_beam, expected)
 
-        print('-----Evaluation-----')
-        print('| greedy search - validation cer', cer)
-        print('| greedy search - validation wer', wer)
-        print('| greedy search - validation bleu', bleu)
-        print('| beam search - validation cer', cer)
-        print('| beam search - validation wer', wer)
-        print('| beam search - validation bleu', bleu)
+    metric = BLEUScore()
+    b_bleu = metric(predicted_beam, expected)
+
+    if wandb_run:
+        wandb_run.log({
+            'greedy search - validation cer': g_cer,
+            'greedy search - validation wer': g_wer,
+            'greedy search - validation bleu': g_bleu,
+            'beam search - validation cer': b_cer,
+            'beam search - validation wer': b_wer,
+            'beam search - validation bleu': b_bleu,
+        })
+
+    print('-----Evaluation-----')
+    print('| greedy search - validation cer', g_cer)
+    print('| greedy search - validation wer', g_wer)
+    print('| greedy search - validation bleu', g_bleu)
+    print('| beam search - validation cer', b_cer)
+    print('| beam search - validation wer', b_wer)
+    print('| beam search - validation bleu', b_bleu)
 
 
 def train_model(config):
@@ -302,8 +232,28 @@ def train_model(config):
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
     count_parameters(model)
-    # Tensorboard
-    writer = SummaryWriter(config['experiment_name'])
+
+    # Logout
+    wandb.login(key=config['wandb_key'])
+
+    if config['wandb_key'] is not None:
+        wandb.login(key=config['wandb_key'])
+        run = wandb.init(
+            project=config['wandb_project_name'],  # Specify your project
+            name=config['wandb_experiment_name'],
+            id=config['wandb_experiment_id'],
+            resume=("must" if config['wandb_experiment_id'] else None),
+            config={                        
+                # Track hyperparameters and metadata
+                "train_size": config['train_size'],
+                "epochs": config['num_epochs'], 
+                "batch_size": config['batch_size'],
+                "lr": config['lr'],
+                "max_seq_len": config['seq_len'],
+                "hidden_dim": config['d_model'],
+                "beam_size": config['beam_size'],      
+            },
+        )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
 
@@ -352,8 +302,8 @@ def train_model(config):
             losses.append(loss.item())
 
             # Log the loss
-            writer.add_scalar('train loss', loss.item(), global_step)
-            writer.flush()
+            if global_step % 10 == 0 and config['wandb_key'] is not None:
+                run.log({'Train loss (10 steps)': loss.item()})
 
             # Backpropagate the loss
             loss.backward()
@@ -364,8 +314,13 @@ def train_model(config):
 
             global_step += 1
 
-        print('| Average Training-Loss : {:.4f}'.format(torch.mean(torch.tensor(losses))))
-        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), global_step, writer, config)
+        avg_loss = torch.mean(torch.tensor(losses))
+        print('| Average Training-Loss : {:.4f}'.format(avg_loss))
+        if config['wandb_key'] is not None:
+            run.log({'Train loss (epoch)': avg_loss})
+            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), epoch, global_step, run, config)
+        else:
+            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), epoch, global_step, None, config)
 
         # Save the model at the end of every epoch
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
