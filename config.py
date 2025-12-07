@@ -12,8 +12,6 @@ def get_config():
         "seq_len": 150,
         "d_model": 512,
         "beam_size": 5,
-        "lang_src": "vi",
-        "lang_tgt": "en",
         "preload_path": None,
         "model_folder": "weights",
         "model_basename": "tmodel_",

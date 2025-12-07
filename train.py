@@ -233,9 +233,6 @@ def train_model(config):
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
     count_parameters(model)
 
-    # Logout
-    wandb.login(key=config['wandb_key'])
-
     if config['wandb_key'] is not None:
         wandb.login(key=config['wandb_key'])
         run = wandb.init(
