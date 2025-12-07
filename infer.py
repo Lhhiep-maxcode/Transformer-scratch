@@ -5,7 +5,7 @@ from tokenizers import Tokenizer
 from datasets import load_dataset
 from dataset import BilingualDataset, causal_mask
 import torch
-import sys
+import torch.nn.functional as F
 
 def length_norm(score, length, alpha=0.6):
     # Wu's formula (used in Google's NMT system) for Length Penalization

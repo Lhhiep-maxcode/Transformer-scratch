@@ -1,8 +1,7 @@
 import torch
-import torch.nn as nn
 from torch.utils.data import Dataset
 
-class BilingualDataset(nn.Module):
+class BilingualDataset(Dataset):
     def __init__(self, src_sentences, tgt_sentences, tokenizer_src, tokenizer_tgt, seq_len):
         super().__init__()
         self.seq_len = seq_len
