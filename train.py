@@ -253,6 +253,15 @@ def run_validation(model, validation_ds,
     print('| beam search - validation bleu', b_bleu)
 
 
+def transformer_lr_lambda(step, d_model, warmup_steps):
+    """
+    Paper formula:
+    lr = d_model^{-0.5} * min(step^{-0.5}, step * warmup^{-1.5})
+    """
+    step = max(step, 1)
+    return (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5))
+
+
 def train_model(config):
     set_seed(config['random_seed'])
     gc.collect()
@@ -287,14 +296,30 @@ def train_model(config):
                 "train_size": config['train_size'],
                 "epochs": config['num_epochs'], 
                 "batch_size": config['batch_size'],
-                "lr": config['lr'],
                 "max_seq_len": config['seq_len'],
                 "hidden_dim": config['d_model'],
                 "beam_size": config['beam_size'],      
             },
         )
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=1.0,                # <-- dummy base lr, real lr comes from scheduler
+        betas=(0.9, 0.98),     # <-- paper values
+        eps=1e-9,
+        weight_decay=0.01
+    )
+
+    warmup_steps = 4000
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda step: transformer_lr_lambda(
+            step,
+            d_model=config['d_model'],
+            warmup_steps=warmup_steps
+        )
+    )
 
     # If the user specified a model to preload before training, load it
     initial_epoch = 0
@@ -304,8 +329,9 @@ def train_model(config):
         print(f'Preloading model {preload_path}')
         state = torch.load(preload_path)
         model.load_state_dict(state['model_state_dict'])
-        initial_epoch = state['epoch'] + 1
         optimizer.load_state_dict(state['optimizer_state_dict'])
+        scheduler.load_state_dict(state['scheduler_state_dict'])
+        initial_epoch = state['epoch'] + 1
         global_step = state['global_step']
     else:
         print('No model to preload, starting from scratch')
@@ -318,40 +344,50 @@ def train_model(config):
 
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
+
         losses = []
+
         for batch in batch_iterator:
             encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
             decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
             encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
             decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
+            label = batch['label'].to(device) # (B, seq_len)
 
-            # Run the tensors through the encoder, decoder and the projection layer
+            # ===== Forward =====
             encoder_output = model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
             decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
             proj_output = model.project(decoder_output) # (B, seq_len, vocab_size)
 
-            # Compare the output with the label
-            label = batch['label'].to(device) # (B, seq_len)
-
             # Compute the loss using a simple cross entropy
             # loss((B * seq_len, vocab_size), (B * seq_len))
-            loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
-            batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
+            loss = loss_fn(
+                proj_output.view(-1, tokenizer_tgt.get_vocab_size()), 
+                label.view(-1)
+            )
 
-            losses.append(loss.item())
-
-            # Log the loss
-            if global_step % 10 == 0 and config['wandb_key'] is not None:
-                run.log({'Train loss (10 steps)': loss.item()})
-
-            # Backpropagate the loss
+            # ===== Backprop =====
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             # Update the weights
             optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+            scheduler.step()
 
             global_step += 1
+            losses.append(loss.item())
+            
+            current_lr = scheduler.get_last_lr()[0]
+            batch_iterator.set_postfix({
+                "loss": f"{loss.item():6.3f}",
+                "lr": f"{current_lr:.2e}"
+            })
+
+            # Log the loss
+            if global_step % 10 == 0 and config['wandb_key'] is not None:
+                run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})
 
         avg_loss = torch.mean(torch.tensor(losses))
         print('| Average Training-Loss : {:.4f}'.format(avg_loss))
@@ -377,6 +413,7 @@ def train_model(config):
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             'global_step': global_step
         }, model_filename)
     
