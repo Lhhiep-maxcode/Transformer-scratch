@@ -3,8 +3,9 @@ import re
 
 def get_config():
     return {
-        "train_size": 100000,   # set -1 to get all
-        "val_size": -1,     # set -1 to get all
+        "data_path": [],
+        "train_size": 100000,   
+        "val_size": -1,     
         "batch_size": 8,
         "num_epochs": 20,
         "lr": 1e-3,

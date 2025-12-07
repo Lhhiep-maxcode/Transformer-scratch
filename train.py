@@ -4,6 +4,8 @@ import warnings
 import gc
 import torch.nn.functional as F
 import wandb
+import pandas as pd
+import random
 from torchmetrics.text import CharErrorRate, WordErrorRate, BLEUScore
 from datasets import load_dataset
 from tokenizers import Tokenizer
@@ -17,70 +19,52 @@ from torch.utils.tensorboard import SummaryWriter
 from config import get_config, get_weights_file_path, latest_weights_file_path
 from tqdm import tqdm
 from infer import greedy_search, beam_search
-
-
 from pathlib import Path
 
-def text_split(data):
-    """
-    Example data: {'text': 'Nó cần có... ###>It needs a...'}
-    """
-    vi, en = data['text'].split("###>")
-    vi = vi.strip()
-    en = en.strip()
-    return vi, en
 
-
-def get_all_sentences(dataset, lang):
-    """
-    dataset: dataset get from huggingface
-    lang: 
-        'vi' - Vietnamese
-        'en' - English
-    """
-    for data in dataset:
-        vi, en = text_split(data)
-        sentence = vi
-        if lang == 'en':
-            sentence = en
-        yield sentence
-
-
-def get_or_build_tokenizer(config, dataset, lang):
+def get_or_build_tokenizer(config, sentences, lang):
     tokenizer_path = Path(config['tokenizer_file'].format(lang))
     if not Path.exists(tokenizer_path):
         tokenizer = Tokenizer(WordLevel(unk_token='[UNK]'))
         tokenizer.pre_tokenizer = Whitespace()
-        trainer = WordLevelTrainer(show_progess=True, special_tokens=['[UNK]', '[PAD]', '[SOS]', '[EOS]'], min_frequency=2)
-        tokenizer.train_from_iterator(get_all_sentences(dataset, lang), trainer=trainer)
+        trainer = WordLevelTrainer(show_progress=True, special_tokens=['[UNK]', '[PAD]', '[SOS]', '[EOS]'], min_frequency=2)
+        tokenizer.train_from_iterator(sentences, trainer=trainer)
         tokenizer.save(str(tokenizer_path))
     else:
         tokenizer = Tokenizer.from_file(str(tokenizer_path))
     return tokenizer
 
+
+def shuffle_parallel_lists(en, vi, seed=42):
+    assert len(en) == len(vi), "Lists must have the same length"
+
+    paired = list(zip(en, vi))
+    random.Random(seed).shuffle(paired)
+
+    en_shuffled, vi_shuffled = zip(*paired)
+    return list(en_shuffled), list(vi_shuffled)
+
+
 def get_ds(config):
-    ds_raw = load_dataset("kaitchup/opus-Vietnamese-to-English")
-    ds_raw_train = [data for data in ds_raw['train']]
-    ds_raw_valid = [data for data in ds_raw['validation']]
+    en_list = []
+    vi_list = []
+    for path in config['data_path']:
+        df = pd.read_csv(path)
+        en_list.extend(df['English'].to_list())
+        vi_list.extend(df['Vietnamese'].to_list())
+    
+    en_list, vi_list = shuffle_parallel_lists(en_list, vi_list, seed=42)
 
     # get tokenizer
-    tokenizer_src = get_or_build_tokenizer(config, ds_raw_train, 'vi')
-    tokenizer_tgt = get_or_build_tokenizer(config, ds_raw_train, 'en')
+    tokenizer_tgt = get_or_build_tokenizer(config, vi_list, 'vi')
+    tokenizer_src = get_or_build_tokenizer(config, en_list, 'en')
     
     max_len_src = 0
     max_len_tgt = 0
 
-    for data in ds_raw_train:
-        vi, en = text_split(data)
-        vi_ids = tokenizer_src.encode(vi).ids
-        en_ids = tokenizer_tgt.encode(en).ids
-        max_len_src = max(max_len_src, len(vi_ids))
-        max_len_tgt = max(max_len_tgt, len(en_ids))
-
-    for data in ds_raw_valid:
-        vi, en = text_split(data)
-        vi_ids = tokenizer_src.encode(vi).ids
-        en_ids = tokenizer_tgt.encode(en).ids
+    for vi, en in zip(vi_list, en_list):
+        vi_ids = tokenizer_tgt.encode(vi).ids
+        en_ids = tokenizer_src.encode(en).ids
         max_len_src = max(max_len_src, len(vi_ids))
         max_len_tgt = max(max_len_tgt, len(en_ids))
     
@@ -90,8 +74,15 @@ def get_ds(config):
     if config_seq_len < max_found_seq_len:
         raise Exception(f"Max founded sequence length is {max_found_seq_len}, but config seq_len is {config_seq_len}. Please increase the config seq_len.")
     
-    train_ds = BilingualDataset(ds_raw_train[:config['train_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
-    val_ds = BilingualDataset(ds_raw_valid[:config['val_size']], tokenizer_src, tokenizer_tgt, config['seq_len'])
+    # Train, valid split
+    train_en = en_list[:config['train_size']]
+    train_vi = vi_list[:config['train_size']]
+
+    val_en = en_list[config['train_size']:(config['train_size'] + config['val_size'])]
+    val_vi = vi_list[config['train_size']:(config['train_size'] + config['val_size'])]
+
+    train_ds = BilingualDataset(train_en, train_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
+    val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
 
     print(f"Training size: {len(train_ds)} sentences")
     print(f"Validation size: {len(val_ds)} sentences")

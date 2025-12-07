@@ -3,11 +3,14 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 
 class BilingualDataset(nn.Module):
-    def __init__(self, ds, tokenizer_src, tokenizer_tgt, seq_len):
+    def __init__(self, src_sentences, tgt_sentences, tokenizer_src, tokenizer_tgt, seq_len):
         super().__init__()
         self.seq_len = seq_len
 
-        self.ds = ds
+        self.src_sentences = src_sentences
+        self.tgt_sentences = tgt_sentences
+        assert len(self.src_sentences) == len(self.tgt_sentences), "Source sentences and Target sentences do not match"
+
         self.tokenizer_src = tokenizer_src
         self.tokenizer_tgt = tokenizer_tgt
 
@@ -16,17 +19,15 @@ class BilingualDataset(nn.Module):
         self.pad_token = torch.tensor([tokenizer_tgt.token_to_id("[PAD]")], dtype=torch.int64)
 
     def __len__(self):
-        return len(self.ds)
+        return len(self.src_sentences)
     
     def __getitem__(self, idx):
-        vi_en_pair = self.ds[idx]['text']
-        vi, en = vi_en_pair.split("###>")
-        vi = vi.strip()
-        en = en.strip()
+        src_sentence = self.src_sentences[idx].strip()
+        tgt_sentence = self.tgt_sentences[idx].strip()
 
         # Transform the text into tokens: "I love you" -> [2, 15, 3]
-        enc_input_tokens = self.tokenizer_src.encode(vi).ids
-        dec_input_tokens = self.tokenizer_tgt.encode(en).ids
+        enc_input_tokens = self.tokenizer_src.encode(src_sentence).ids
+        dec_input_tokens = self.tokenizer_tgt.encode(tgt_sentence).ids
 
         # Add [sos], [eos] and [padding] to each sentence
         enc_num_padding_tokens = self.seq_len - len(enc_input_tokens) - 2  # We will add <s> and </s>
@@ -73,8 +74,8 @@ class BilingualDataset(nn.Module):
             "encoder_mask": (encoder_input != self.pad_token).unsqueeze(0).unsqueeze(0).int(), # (1, 1, seq_len)
             "decoder_mask": (decoder_input != self.pad_token).unsqueeze(0).int() & causal_mask(decoder_input.size(0)), # (1, seq_len) & (1, seq_len, seq_len),
             "label": label,  # (seq_len)
-            "src_text": vi,
-            "tgt_text": en,
+            "src_text": src_sentence,
+            "tgt_text": tgt_sentence,
         }
     
 def causal_mask(size):
