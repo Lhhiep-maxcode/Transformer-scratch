@@ -165,7 +165,10 @@ def log_validation_results(
             f.write("\n")
 
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, epoch, global_step, wandb_run, config, num_examples=5):
+def run_validation(model, validation_ds, 
+                   tokenizer_src, tokenizer_tgt, 
+                   max_len, device, print_msg, epoch, 
+                   global_step, wandb_run, config, num_examples=5):
     model.eval()
     count = 0
     
@@ -354,9 +357,19 @@ def train_model(config):
         print('| Average Training-Loss : {:.4f}'.format(avg_loss))
         if config['wandb_key'] is not None:
             run.log({'Train loss (epoch)': avg_loss})
-            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), epoch, global_step, run, config)
+            run_validation(
+                model, val_dataloader, tokenizer_src, 
+                tokenizer_tgt, config["seq_len"], device, 
+                lambda msg: batch_iterator.write(msg), epoch, 
+                global_step, run, config, num_examples=-1
+            )
         else:
-            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config["seq_len"], device, lambda msg: batch_iterator.write(msg), epoch, global_step, None, config)
+            run_validation(
+                model, val_dataloader, tokenizer_src, 
+                tokenizer_tgt, config["seq_len"], device, 
+                lambda msg: batch_iterator.write(msg), epoch, 
+                global_step, None, config, num_examples=-1
+            )
 
         # Save the model at the end of every epoch
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
