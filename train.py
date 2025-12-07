@@ -200,15 +200,7 @@ def run_validation(model, validation_ds,
             predicted_greedy.append(model_out_text_greedy)
             predicted_beam.append(model_out_text_beam)
 
-            # Print the source, target and model output
-            print_msg('-'*console_width)
-            print_msg(f"{f'SOURCE: ':>12}{source_text}")
-            print_msg(f"{f'TARGET: ':>12}{target_text}")
-            print_msg(f"{f'PREDICTED GREEDY: ':>12}{model_out_text_greedy}")
-            print_msg(f"{f'PREDICTED BEAM: ':>12}{model_out_text_beam}")
-
             if count == num_examples:
-                print_msg('-'*console_width)
                 break
 
     log_validation_results(
