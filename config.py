@@ -3,22 +3,21 @@ import re
 
 def get_config():
     return {
-        "data_path": [],
-        "train_size": 100000,   
-        "val_size": -1,     
-        "batch_size": 8,
+        "data_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
+        "train_size": 0.9,   
+        "val_size": 0.1,     
+        "batch_size": 1,
         "num_epochs": 20,
         "lr": 1e-3,
-        "seq_len": 150,
+        "seq_len": 300,
         "d_model": 512,
         "beam_size": 5,
-        "lang_src": "vi",
-        "lang_tgt": "en",
         "preload_path": None,
         "model_folder": "weights",
         "model_basename": "tmodel_",
         "tokenizer_file": "tokenizer_{0}.json",
         "experiment_name": "runs/tmodel",
+        "random_seed": 42,
         # wandb log
         "wandb_key": None,
         "wandb_project_name": "Transformer from scratch",
