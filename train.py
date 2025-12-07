@@ -82,9 +82,9 @@ def get_ds(config):
     filtered_en_list = []
     filtered_vi_list = []
     for en, vi in zip(en_list, vi_list):
-        if len(tokenizer_src.encode(en).ids) > config['seq_len']:
+        if len(tokenizer_src.encode(en).ids) > config['seq_len'] - 2:
             continue
-        if len(tokenizer_tgt.encode(vi).ids) > config['seq_len']:
+        if len(tokenizer_tgt.encode(vi).ids) > config['seq_len'] - 2:
             continue
 
         filtered_en_list.append(en)
