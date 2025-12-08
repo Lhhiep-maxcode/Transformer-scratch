@@ -222,8 +222,12 @@ def run_validation(model, validation_ds,
 
             assert encoder_input.size(0) == 1, "Batch size must be 1"
 
-            model_out_greedy = greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
-            model_out_beam = beam_search(model, config['beam_size'], encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            if hasattr(model, 'module'):
+                model_out_greedy = greedy_search(model.module, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+                model_out_beam = beam_search(model.module, config['beam_size'], encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            else:
+                model_out_greedy = greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+                model_out_beam = beam_search(model, config['beam_size'], encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
 
             source_text = batch["src_text"][0]
             target_text = batch["tgt_text"][0]
