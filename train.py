@@ -245,13 +245,13 @@ def run_validation(model, validation_ds,
     print('| beam search - validation bleu', b_bleu)
 
 
-def transformer_lr_lambda(step, d_model, warmup_steps):
+def transformer_lr_lambda(step, d_model, warmup_steps, peak_lr):
     """
     Paper formula:
     lr = d_model^{-0.5} * min(step^{-0.5}, step * warmup^{-1.5})
     """
     step = max(step, 1)
-    return (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5))
+    return peak_lr * (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5)) / ((warmup_steps ** -0.5) * (d_model ** -0.5))
 
 
 def train_model(config):
@@ -302,14 +302,15 @@ def train_model(config):
         weight_decay=0.01
     )
 
-    warmup_steps = 4000
+    warmup_steps = config['warmup_steps']
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lr_lambda=lambda step: transformer_lr_lambda(
             step,
             d_model=config['d_model'],
-            warmup_steps=warmup_steps
+            warmup_steps=config['warmup_steps'],
+            peak_lr=config['peak_lr']
         )
     )
 
