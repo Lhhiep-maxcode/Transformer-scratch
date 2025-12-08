@@ -4,5 +4,6 @@ __pycache__
 *.csv
 runs/
 weights/
-
+env/
 wandb/
+check.ipynb

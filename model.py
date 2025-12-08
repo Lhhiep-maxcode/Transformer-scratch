@@ -46,8 +46,12 @@ class InputEmbeddings(nn.Module):
     
 class PositionalEncoding(nn.Module):
 
-    def __init__(self, d_model: int, seq_len: int, dropout: float) -> None:
+    def __init__(self, d_model: int, seq_len: int, dropout: float, type="Sinusoidal") -> None:
         super().__init__()
+        self.sinusoidal_positional_encoding(d_model, seq_len, dropout)
+        
+
+    def sinusoidal_positional_encoding(self, d_model: int, seq_len: int, dropout: float) -> None:
         self.d_model = d_model
         self.seq_len = seq_len
         self.dropout = nn.Dropout(dropout)
@@ -69,6 +73,41 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
         return self.dropout(x)
+
+
+class RotationalPositionalEncoding(nn.Module):
+
+    def __init__(self) -> None:
+        super().__init__()
+    
+    def precompute_cos_sin(self, dim, seq_len, theta=10000.0):
+        half = dim // 2
+        freq_seq = 1.0 / (theta ** (torch.arange(0, half, device="cuda") / half))
+
+        t = torch.arange(seq_len, device="cuda")
+        freqs = torch.einsum("i,j->ij", t, freq_seq)
+
+        # final shapes: [1, seq_len, dim]
+        cos = torch.cat([freqs.cos(), freqs.cos()], dim=-1).unsqueeze(0)
+        sin = torch.cat([freqs.sin(), freqs.sin()], dim=-1).unsqueeze(0)
+        return cos, sin
+
+    def apply_rotary_pos_emb(self, q, k, cos, sin, position_ids, dim, seq_len):
+        cos, sin = self.precompute_cos_sin(dim, seq_len)
+        cos = cos.squeeze(1).squeeze(1)  # (seq_len, dim)
+        sin = sin.squeeze(1).squeeze(1)  # (seq_len, dim)
+        cos = cos[position_ids].unsqueeze(1)  # (batch, 1, seq_len, dim)
+        sin = sin[position_ids].unsqueeze(1)  # (batch, 1, seq_len, dim)
+        q_embed = (q * cos) + (self.rotate_every_two(q) * sin)
+        k_embed = (k * cos) + (self.rotate_every_two(k) * sin)
+        return q_embed, k_embed
+    
+    def rotate_every_two(self, x):
+        x1 = x[..., :x.shape[-1]//2]
+        x2 = x[..., x.shape[-1]//2:]
+        x_rotated = torch.cat((-x2, x1), dim=-1)
+        return x_rotated
+
 
 class ResidualConnection(nn.Module):
     
