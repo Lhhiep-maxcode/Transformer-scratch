@@ -77,14 +77,16 @@ class PositionalEncoding(nn.Module):
 
 class RotationalPositionalEncoding(nn.Module):
 
-    def __init__(self) -> None:
+    def __init__(self, head_dim, seq_len) -> None:
         super().__init__()
+        self.cos, self.sin = self.precompute_cos_sin(head_dim, seq_len)
     
     def precompute_cos_sin(self, dim, seq_len, theta=10000.0):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         half = dim // 2
-        freq_seq = 1.0 / (theta ** (torch.arange(0, half, device="cuda") / half))
+        freq_seq = 1.0 / (theta ** (torch.arange(0, half, device=device) / half))
 
-        t = torch.arange(seq_len, device="cuda")
+        t = torch.arange(seq_len, device=device)
         freqs = torch.einsum("i,j->ij", t, freq_seq)
 
         # final shapes: [1, seq_len, dim]
@@ -92,14 +94,18 @@ class RotationalPositionalEncoding(nn.Module):
         sin = torch.cat([freqs.sin(), freqs.sin()], dim=-1).unsqueeze(0)
         return cos, sin
 
-    def apply_rotary_pos_emb(self, q, k, cos, sin, position_ids, dim, seq_len):
-        cos, sin = self.precompute_cos_sin(dim, seq_len)
-        cos = cos.squeeze(1).squeeze(1)  # (seq_len, dim)
-        sin = sin.squeeze(1).squeeze(1)  # (seq_len, dim)
+    def apply_rotary_pos_emb(self, q, k, position_ids):
+        # Truyền head_dim vào precompute
+        cos = self.cos.squeeze(0)  # (seq_len, dim)
+        sin = self.sin.squeeze(0) # (seq_len, dim)
         cos = cos[position_ids].unsqueeze(1)  # (batch, 1, seq_len, dim)
         sin = sin[position_ids].unsqueeze(1)  # (batch, 1, seq_len, dim)
+
         q_embed = (q * cos) + (self.rotate_every_two(q) * sin)
-        k_embed = (k * cos) + (self.rotate_every_two(k) * sin)
+        if k != None:
+            k_embed = (k * cos) + (self.rotate_every_two(k) * sin)
+        else:
+            k_embed = None
         return q_embed, k_embed
     
     def rotate_every_two(self, x):
@@ -111,17 +117,17 @@ class RotationalPositionalEncoding(nn.Module):
 
 class ResidualConnection(nn.Module):
     
-        def __init__(self, features: int, dropout: float) -> None:
-            super().__init__()
-            self.dropout = nn.Dropout(dropout)
-            self.norm = LayerNormalization(features)
-    
-        def forward(self, x, sublayer):
-            return x + self.dropout(sublayer(self.norm(x)))
+    def __init__(self, features: int, dropout: float) -> None:
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = LayerNormalization(features)
+
+    def forward(self, x, sublayer):
+        return x + self.dropout(sublayer(self.norm(x)))
 
 class MultiHeadAttentionBlock(nn.Module):
 
-    def __init__(self, d_model: int, h: int, dropout: float) -> None:
+    def __init__(self, d_model: int, h: int, dropout: float, seq_len: int, is_cross_attention = False) -> None:
         super().__init__()
         self.d_model = d_model # Embedding vector size
         self.h = h # Number of heads
@@ -134,6 +140,8 @@ class MultiHeadAttentionBlock(nn.Module):
         self.w_v = nn.Linear(d_model, d_model, bias=False) # Wv
         self.w_o = nn.Linear(d_model, d_model, bias=False) # Wo
         self.dropout = nn.Dropout(dropout)
+        self.rotary_pos_enc = RotationalPositionalEncoding(self.d_k, seq_len)
+        self.is_cross_attention = is_cross_attention
 
     @staticmethod
     def attention(query, key, value, mask, dropout: nn.Dropout):
@@ -160,6 +168,17 @@ class MultiHeadAttentionBlock(nn.Module):
         query = query.view(query.shape[0], query.shape[1], self.h, self.d_k).transpose(1, 2)
         key = key.view(key.shape[0], key.shape[1], self.h, self.d_k).transpose(1, 2)
         value = value.view(value.shape[0], value.shape[1], self.h, self.d_k).transpose(1, 2)
+
+        # RoPE implementation
+        seq_len = q.size(1)
+        # (seq_len)
+        position_ids = torch.arange(0, seq_len, dtype=torch.long, device=q.device)
+        #(batch_size, seq_len)
+        position_ids = position_ids.unsqueeze(0).view(-1, seq_len)
+        if self.is_cross_attention == False:
+            query, key = self.rotary_pos_enc.apply_rotary_pos_emb(query, key, position_ids)
+        else:
+            query, _ = self.rotary_pos_enc.apply_rotary_pos_emb(query, None, position_ids)
 
         # Calculate attention
         x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key, value, mask, self.dropout)
@@ -249,13 +268,13 @@ class Transformer(nn.Module):
     def encode(self, src, src_mask):
         # (batch, seq_len, d_model)
         src = self.src_embed(src)
-        src = self.src_pos(src)
+        # src = self.src_pos(src)
         return self.encoder(src, src_mask)
     
     def decode(self, encoder_output: torch.Tensor, src_mask: torch.Tensor, tgt: torch.Tensor, tgt_mask: torch.Tensor):
         # (batch, seq_len, d_model)
         tgt = self.tgt_embed(tgt)
-        tgt = self.tgt_pos(tgt)
+        # tgt = self.tgt_pos(tgt)
         return self.decoder(tgt, encoder_output, src_mask, tgt_mask)
     
     def project(self, x):
@@ -274,7 +293,7 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     # Create the encoder blocks
     encoder_blocks = []
     for _ in range(N):
-        encoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        encoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout, src_seq_len)
         feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
         encoder_block = EncoderBlock(d_model, encoder_self_attention_block, feed_forward_block, dropout)
         encoder_blocks.append(encoder_block)
@@ -282,8 +301,8 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     # Create the decoder blocks
     decoder_blocks = []
     for _ in range(N):
-        decoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
-        decoder_cross_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        decoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout, tgt_seq_len)
+        decoder_cross_attention_block = MultiHeadAttentionBlock(d_model, h, dropout, src_seq_len, is_cross_attention=True)
         feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
         decoder_block = DecoderBlock(d_model, decoder_self_attention_block, decoder_cross_attention_block, feed_forward_block, dropout)
         decoder_blocks.append(decoder_block)

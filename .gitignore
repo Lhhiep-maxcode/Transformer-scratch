@@ -7,3 +7,6 @@ weights/
 env/
 wandb/
 check.ipynb
+transformer.zip
+transformer_2.zip
+validation_log.txt

@@ -3,28 +3,27 @@ import re
 
 def get_config():
     return {
-        "data_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
-        "train_size": 0.9,   
-        "val_size": 0.1,     
-        "batch_size": 1,
-        "num_epochs": 20,
+        "data_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
+        "train_size": 0.05,   
+        "val_size": 1 / 30000,     
+        "batch_size": 64,
+        "num_epochs": 8,
         "peak_lr": 7e-4,
         "warmup_steps": 4000,
-        "seq_len": 300,
+        "seq_len": 102,
         "d_model": 512,
         "beam_size": 5,
         "preload_path": None,
         "model_folder": "weights",
         "model_basename": "tmodel_",
-        "tokenizer_file": "tokenizer_{0}.json",
+        "tokenizer_file": "wordlevel_tokenizer_{0}.json",
         "experiment_name": "runs/tmodel",
         "random_seed": 42,
         # wandb log
-        "wandb_key": None,
+        "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825",
         "wandb_project_name": "Transformer from scratch",
         "wandb_experiment_name": "Init experiment",
         "wandb_experiment_id": None,
-        
     }
 
 def get_weights_file_path(config, epoch: int):
