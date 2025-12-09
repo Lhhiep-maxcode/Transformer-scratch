@@ -9,8 +9,8 @@ import random
 from torchmetrics.text import CharErrorRate, WordErrorRate, BLEUScore
 from datasets import load_dataset
 from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
-from tokenizers.trainers import WordLevelTrainer
+from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from dataset import BilingualDataset, causal_mask
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -41,9 +41,14 @@ def set_seed(seed=42):
 def get_or_build_tokenizer(config, sentences, lang):
     tokenizer_path = Path(config['tokenizer_file'].format(lang))
     if not Path.exists(tokenizer_path):
-        tokenizer = Tokenizer(WordLevel(unk_token='[UNK]'))
+        tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
         tokenizer.pre_tokenizer = Whitespace()
-        trainer = WordLevelTrainer(show_progress=True, special_tokens=['[UNK]', '[PAD]', '[SOS]', '[EOS]'], min_frequency=2)
+        trainer = BpeTrainer(
+            special_tokens=["[UNK]", "[PAD]", "[SOS]", "[EOS]"], 
+            min_frequency=2, 
+            vocab_size=30000,
+            show_progress=True
+        )
         tokenizer.train_from_iterator(sentences, trainer=trainer)
         tokenizer.save(str(tokenizer_path))
     else:
