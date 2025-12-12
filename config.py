@@ -20,7 +20,7 @@ def get_config():
         "experiment_name": "runs/tmodel",
         "random_seed": 42,
         # wandb log
-        "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825",
+        "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825", 
         "wandb_project_name": "Transformer from scratch",
         "wandb_experiment_name": "Init experiment",
         "wandb_experiment_id": None,
