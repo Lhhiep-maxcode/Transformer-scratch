@@ -123,7 +123,7 @@ def get_ds(config):
     print(f"Training size: {len(train_ds)} sentences")
     print(f"Validation size: {len(val_ds)} sentences")
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, drop_last=True)
+    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size_base'], shuffle=True, drop_last=True)
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
 
     print('='*30)
@@ -287,7 +287,7 @@ def train_model(config):
                 # Track hyperparameters and metadata
                 "train_size": config['train_size'],
                 "epochs": config['num_epochs'], 
-                "batch_size": config['batch_size'],
+                "batch_size": config['batch_size_max'],
                 "max_seq_len": config['seq_len'],
                 "hidden_dim": config['d_model'],
                 "beam_size": config['beam_size'],      
@@ -330,6 +330,8 @@ def train_model(config):
 
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
+    number_of_iteration = config['batch_size_max'] // config['batch_size_base']
+
     for epoch in range(initial_epoch, config['num_epochs']):
         if device == "cuda":
             torch.cuda.empty_cache()
@@ -339,7 +341,7 @@ def train_model(config):
 
         losses = []
 
-        for batch in batch_iterator:
+        for i, batch in enumerate(batch_iterator):
             encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
             decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
             encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
@@ -359,16 +361,18 @@ def train_model(config):
             )
 
             # ===== Backprop =====
-            optimizer.zero_grad(set_to_none=True)
+            if (i + 1) % number_of_iteration != 0:
+                optimizer.zero_grad(set_to_none=True)
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             # Update the weights
-            optimizer.step()
-            scheduler.step()
-
-            global_step += 1
+            if (i + 1) % number_of_iteration == 0:
+                optimizer.step()
+                scheduler.step()
+                global_step += 1
+                
             losses.append(loss.item())
             
             current_lr = scheduler.get_last_lr()[0]
