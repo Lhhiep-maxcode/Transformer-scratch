@@ -3,14 +3,17 @@ import re
 
 def get_config():
     return {
-        "data_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
+        "train_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
+        "test_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
+        "test_only": False,
         "train_size": 0.9,   
         "val_size": 0.1,     
         "batch_size": 1,
         "num_epochs": 20,
         "peak_lr": 7e-4,
         "warmup_steps": 4000,
-        "seq_len": 300,
+        "train_seq_len": 102,
+        "test_seq_len": 302,
         "d_model": 512,
         "beam_size": 5,
         "preload_path": None,
