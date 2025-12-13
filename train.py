@@ -428,14 +428,14 @@ def train_model(config):
         run_validation(
             model, test_dataloader, tokenizer_src, 
             tokenizer_tgt, config["test_seq_len"], device, 
-            epoch, run, config, 
+            "test", run, config, 
             comet_model, num_examples=100
         )
     else:
         run_validation(
             model, test_dataloader, tokenizer_src, 
             tokenizer_tgt, config["test_seq_len"], device, 
-            epoch, None, config, 
+            "test", None, config, 
             comet_model, num_examples=100
         )
     
