@@ -9,6 +9,7 @@ import random
 import os
 import numpy as np
 import torch.distributed as dist
+from comet import download_model, load_from_checkpoint
 from torch.utils.data.distributed import DistributedSampler
 from torchmetrics.text import CharErrorRate, WordErrorRate, BLEUScore
 from tokenizers import Tokenizer
@@ -133,8 +134,32 @@ def get_ds(config, ddp_enabled):
     val_en = en_list[int(config['train_size'] * len(en_list)):int((config['train_size'] + config['val_size']) * len(en_list))]
     val_vi = vi_list[int(config['train_size'] * len(en_list)):int((config['train_size'] + config['val_size']) * len(en_list))]
 
+    test_en = []
+    test_vi = []
+    for path in config['test_path']:
+        df = pd.read_csv(path)
+        test_en.extend(df['English'].to_list())
+        test_vi.extend(df['Vietnamese'].to_list())
+
+    filtered_en_list = []
+    filtered_vi_list = []
+    for en, vi in zip(test_en, test_vi):
+        enc_input_tokens = tokenizer_src.encode(en).ids
+        dec_input_tokens = tokenizer_tgt.encode(vi).ids
+
+        if ((config['test_seq_len'] - len(enc_input_tokens) - 2 < 0) or
+            (config['test_seq_len'] - len(dec_input_tokens) - 1 < 0)):
+            continue
+
+        filtered_en_list.append(en)
+        filtered_vi_list.append(vi)
+        
+    test_en = filtered_en_list
+    test_vi = filtered_vi_list
+
     train_ds = BilingualDataset(train_en, train_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
     val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
+    test_ds = BilingualDataset(test_en, test_vi, tokenizer_src, tokenizer_tgt, config['test_seq_len'])
 
     if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
         print(f"Training size: {len(train_ds)} sentences")
@@ -162,8 +187,10 @@ def get_ds(config, ddp_enabled):
         )
 
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
-    
-    return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt, train_sampler
+    test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
+    print('='*30)
+
+    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt
     
 
 def get_model(config, vocab_src_len, vocab_tgt_len):
@@ -179,6 +206,12 @@ def count_parameters(model):
     print(f"Total parameters: {total}")
     print(f"Trainable parameters: {trainable}")
 
+def load_comet_model(device):
+    model_path = download_model("Unbabel/wmt22-comet-da")
+    comet_model = load_from_checkpoint(model_path)
+    comet_model.to(device)
+    comet_model.eval()
+    return comet_model
 
 def log_validation_results(
     source_texts, expected, predicted_greedy, predicted_beam, 
@@ -200,10 +233,12 @@ def log_validation_results(
             f.write("\n")
 
 
-def run_validation(model, validation_ds, 
-                   tokenizer_src, tokenizer_tgt, 
-                   max_len, device, print_msg, epoch, 
-                   global_step, wandb_run, config, num_examples=5):
+def run_validation(
+    model, validation_ds, 
+    tokenizer_src, tokenizer_tgt, 
+    max_len, device, epoch, 
+    wandb_run, config, comet_model, num_examples=100
+):
     model.eval()
     count = 0
     
@@ -211,8 +246,6 @@ def run_validation(model, validation_ds,
     expected = []
     predicted_greedy = []
     predicted_beam = []
-
-    console_width = 80
 
     with torch.no_grad():
         for batch in validation_ds:
@@ -247,41 +280,32 @@ def run_validation(model, validation_ds,
         log_path="validation_log.txt", epoch=epoch
     )
 
-    metric = CharErrorRate()
-    g_cer = metric(predicted_greedy, expected)
+    comet_data = [
+        {
+            "src": s,
+            "mt": h,
+            "ref": r
+        }
+        for s, h, r in zip(source_texts, predicted_beam, expected)
+    ]
 
-    metric = WordErrorRate()
-    g_wer = metric(predicted_greedy, expected)
+    with torch.no_grad():
+        comet_output = comet_model.predict(
+            comet_data,
+            batch_size=8,
+            gpus=1 if device.type == "cuda" else 0
+        )
 
-    metric = BLEUScore()
-    g_bleu = metric(predicted_greedy, expected)
+    comet_score = sum(comet_output["scores"]) / len(comet_output["scores"])
 
-    metric = CharErrorRate()
-    b_cer = metric(predicted_beam, expected)
-
-    metric = WordErrorRate()
-    b_wer = metric(predicted_beam, expected)
-
-    metric = BLEUScore()
-    b_bleu = metric(predicted_beam, expected)
-
+    # ---- logging ----
     if wandb_run:
         wandb_run.log({
-            'greedy search - validation cer': g_cer,
-            'greedy search - validation wer': g_wer,
-            'greedy search - validation bleu': g_bleu,
-            'beam search - validation cer': b_cer,
-            'beam search - validation wer': b_wer,
-            'beam search - validation bleu': b_bleu,
+            "validation/COMET-DA": comet_score,
         })
 
-    print('-----Evaluation-----')
-    print('| greedy search - validation cer', g_cer)
-    print('| greedy search - validation wer', g_wer)
-    print('| greedy search - validation bleu', g_bleu)
-    print('| beam search - validation cer', b_cer)
-    print('| beam search - validation wer', b_wer)
-    print('| beam search - validation bleu', b_bleu)
+    print("----- Validation -----")
+    print(f"| COMET-DA score: {comet_score:.4f}")
 
 
 def transformer_lr_lambda(step, d_model, warmup_steps, peak_lr):
@@ -307,6 +331,10 @@ def train_model(config):
 
     device = torch.device(f"cuda:{local_rank}")
 
+    comet_model = None
+    if local_rank == 0:
+        comet_model = load_comet_model(device)
+
     if local_rank == 0 and config['wandb_key'] is not None:
         wandb.login(key=config['wandb_key'])
         run = wandb.init(
@@ -328,7 +356,7 @@ def train_model(config):
         run = None
 
     Path(f"{config['model_folder']}").mkdir(parents=True, exist_ok=True)
-    train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt, train_sampler = get_ds(config, ddp_enabled)
+    train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, train_sampler = get_ds(config, ddp_enabled)
 
     model = get_model(
         config,
@@ -380,92 +408,110 @@ def train_model(config):
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
-    for epoch in range(initial_epoch, config['num_epochs']):
-        if ddp_enabled:
-            train_sampler.set_epoch(epoch)
+    if config['test_only'] == False:
+        for epoch in range(initial_epoch, config['num_epochs']):
+            if ddp_enabled:
+                train_sampler.set_epoch(epoch)
 
-        model.train()
-        if local_rank == 0:
-            batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
-        else:
-            batch_iterator = train_dataloader
+            model.train()
+            if local_rank == 0:
+                batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
+            else:
+                batch_iterator = train_dataloader
 
-        losses = []
+            losses = []
 
-        for batch in batch_iterator:
-            encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
-            decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
-            encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
-            decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
-            label = batch['label'].to(device) # (B, seq_len)
+            for batch in batch_iterator:
+                encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
+                decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
+                encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
+                decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
+                label = batch['label'].to(device) # (B, seq_len)
 
-            optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(set_to_none=True)
 
-            # ===== Forward =====
-            # Autocast handles the casting (FP32 -> FP16 -> FP32) dynamically
-            with torch.amp.autocast('cuda', enabled=(device.type == "cuda")):
-                proj_output = model(encoder_input, encoder_mask, decoder_input, decoder_mask)
+                # ===== Forward =====
+                # Autocast handles the casting (FP32 -> FP16 -> FP32) dynamically
+                with torch.amp.autocast('cuda', enabled=(device.type == "cuda")):
+                    proj_output = model(encoder_input, encoder_mask, decoder_input, decoder_mask)
 
-                # Compute the loss using a simple cross entropy
-                # loss((B * seq_len, vocab_size), (B * seq_len))
-                loss = loss_fn(
-                    proj_output.view(-1, tokenizer_tgt.get_vocab_size()), 
-                    label.view(-1)
+                    # Compute the loss using a simple cross entropy
+                    # loss((B * seq_len, vocab_size), (B * seq_len))
+                    loss = loss_fn(
+                        proj_output.view(-1, tokenizer_tgt.get_vocab_size()), 
+                        label.view(-1)
+                    )
+
+                # ===== Backprop =====
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                
+                scheduler.step()
+                global_step += 1
+                losses.append(loss.item())
+                
+                if local_rank == 0:
+                    current_lr = scheduler.get_last_lr()[0]
+                    batch_iterator.set_postfix({
+                        "loss": f"{loss.item():6.3f}",
+                        "lr": f"{current_lr:.2e}"
+                    })
+
+                    if global_step % 10 == 0 and config['wandb_key'] is not None:
+                        run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})
+
+            avg_loss = torch.mean(torch.tensor(losses))
+            print('| Average Training-Loss : {:.4f}'.format(avg_loss))
+
+            if config['wandb_key'] is not None and local_rank == 0:
+                run.log({'Train loss (epoch)': avg_loss})
+                run_validation(
+                    model, val_dataloader, tokenizer_src, 
+                    tokenizer_tgt, config["train_seq_len"], device, 
+                    epoch, run, config, 
+                    comet_model, num_examples=100
+                )
+            elif local_rank == 0:
+                run_validation(
+                    model, val_dataloader, tokenizer_src, 
+                    tokenizer_tgt, config["train_seq_len"], device, 
+                    epoch, None, config, 
+                    comet_model, num_examples=100
                 )
 
-            # ===== Backprop =====
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            
-            scheduler.step()
-            global_step += 1
-            losses.append(loss.item())
-            
+            # Save the model at the end of every epoch
             if local_rank == 0:
-                current_lr = scheduler.get_last_lr()[0]
-                batch_iterator.set_postfix({
-                    "loss": f"{loss.item():6.3f}",
-                    "lr": f"{current_lr:.2e}"
-                })
+                # Save model.module.state_dict() if DDP is on, else model.state_dict()
+                model_to_save = model.module if ddp_enabled else model
+                model_filename = get_weights_file_path(config, f"{epoch:02d}")
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model_to_save.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'global_step': global_step
+                }, model_filename)
 
-                if global_step % 10 == 0 and config['wandb_key'] is not None:
-                    run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})
-
-        avg_loss = torch.mean(torch.tensor(losses))
-        print('| Average Training-Loss : {:.4f}'.format(avg_loss))
-
-        if config['wandb_key'] is not None and local_rank == 0:
+    if local_rank == 0:
+        if config['wandb_key'] is not None:
             run.log({'Train loss (epoch)': avg_loss})
             run_validation(
-                model, val_dataloader, tokenizer_src, 
-                tokenizer_tgt, config["seq_len"], device, 
-                lambda msg: batch_iterator.write(msg), epoch, 
-                global_step, run, config, num_examples=-1
+                model, test_dataloader, tokenizer_src, 
+                tokenizer_tgt, config["test_seq_len"], device, 
+                "test", run, config, 
+                comet_model, num_examples=100
             )
-        elif local_rank == 0:
+        else:
             run_validation(
-                model, val_dataloader, tokenizer_src, 
-                tokenizer_tgt, config["seq_len"], device, 
-                lambda msg: batch_iterator.write(msg), epoch, 
-                global_step, None, config, num_examples=-1
+                model, test_dataloader, tokenizer_src, 
+                tokenizer_tgt, config["test_seq_len"], device, 
+                "test", None, config, 
+                comet_model, num_examples=100
             )
 
-        # Save the model at the end of every epoch
-        if local_rank == 0:
-            # Save model.module.state_dict() if DDP is on, else model.state_dict()
-            model_to_save = model.module if ddp_enabled else model
-            model_filename = get_weights_file_path(config, f"{epoch:02d}")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model_to_save.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'global_step': global_step
-            }, model_filename)
-    
 
 if __name__ == '__main__':
     # torchrun --nproc_per_node=2 train.py
