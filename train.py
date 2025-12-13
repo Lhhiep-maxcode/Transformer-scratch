@@ -124,6 +124,22 @@ def get_ds(config):
         test_en.extend(df['English'].to_list())
         test_vi.extend(df['Vietnamese'].to_list())
 
+    filtered_en_list = []
+    filtered_vi_list = []
+    for en, vi in zip(test_en, test_vi):
+        enc_input_tokens = tokenizer_src.encode(en).ids
+        dec_input_tokens = tokenizer_tgt.encode(vi).ids
+
+        if ((config['test_seq_len'] - len(enc_input_tokens) - 2 < 0) or
+            (config['test_seq_len'] - len(dec_input_tokens) - 1 < 0)):
+            continue
+
+        filtered_en_list.append(en)
+        filtered_vi_list.append(vi)
+        
+    test_en = filtered_en_list
+    test_vi = filtered_vi_list
+
     train_ds = BilingualDataset(train_en, train_vi, tokenizer_src, tokenizer_tgt, config['train_seq_len'])
     val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['train_seq_len'])
     test_ds = BilingualDataset(test_en, test_vi, tokenizer_src, tokenizer_tgt, config['test_seq_len'])
