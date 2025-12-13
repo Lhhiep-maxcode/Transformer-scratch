@@ -3,14 +3,16 @@ import re
 
 def get_config():
     return {
-        "data_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
-        "train_size": 0.9,   
-        "val_size": 0.1,     
-        "batch_size": 1,
+        "data_path": ['C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv'],
+        "train_size": 0.05,   
+        "val_size": 1/30000,     
+        "batch_size": 64,
         "num_epochs": 20,
         "peak_lr": 7e-4,
         "warmup_steps": 4000,
-        "seq_len": 300,
+        "min_tau": 0.1,
+        "max_tau": 0.2,
+        "seq_len": 102,
         "d_model": 512,
         "beam_size": 5,
         "preload_path": None,

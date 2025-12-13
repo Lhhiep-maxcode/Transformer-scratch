@@ -6,3 +6,10 @@ runs/
 weights/
 
 wandb/
+env/
+v4 (v6 on kaggle)/
+*.ipynb
+*.zip
+*.txt
+env/
+*.ipynb
