@@ -164,6 +164,7 @@ def get_ds(config, ddp_enabled):
     if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
         print(f"Training size: {len(train_ds)} sentences")
         print(f"Validation size: {len(val_ds)} sentences")
+        print(f"Test size: {len(test_ds)} sentences")
         print('='*30)
 
     if ddp_enabled:
@@ -190,7 +191,7 @@ def get_ds(config, ddp_enabled):
     test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
     print('='*30)
 
-    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt
+    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, train_sampler
     
 
 def get_model(config, vocab_src_len, vocab_tgt_len):
