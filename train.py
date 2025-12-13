@@ -68,7 +68,7 @@ def get_ds(config, ddp_enabled):
         
     en_list = []
     vi_list = []
-    for path in config['data_path']:
+    for path in config['train_path']:
         df = pd.read_csv(path)
         en_list.extend(df['English'].to_list())
         vi_list.extend(df['Vietnamese'].to_list())
@@ -95,15 +95,15 @@ def get_ds(config, ddp_enabled):
     
     total_data = len(en_list)
 
-    # filter out sentences' length > config['seq_len']
+    # filter out sentences' length > config['train_seq_len']
     filtered_en_list = []
     filtered_vi_list = []
     for en, vi in zip(en_list, vi_list):
         enc_input_tokens = tokenizer_src.encode(en).ids
         dec_input_tokens = tokenizer_tgt.encode(vi).ids
 
-        if ((config['seq_len'] - len(enc_input_tokens) - 2 < 0) or
-            (config['seq_len'] - len(dec_input_tokens) - 1 < 0)):
+        if ((config['train_seq_len'] - len(enc_input_tokens) - 2 < 0) or
+            (config['train_seq_len'] - len(dec_input_tokens) - 1 < 0)):
             continue
 
         filtered_en_list.append(en)
@@ -157,8 +157,8 @@ def get_ds(config, ddp_enabled):
     test_en = filtered_en_list
     test_vi = filtered_vi_list
 
-    train_ds = BilingualDataset(train_en, train_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
-    val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['seq_len'])
+    train_ds = BilingualDataset(train_en, train_vi, tokenizer_src, tokenizer_tgt, config['train_seq_len'])
+    val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['train_seq_len'])
     test_ds = BilingualDataset(test_en, test_vi, tokenizer_src, tokenizer_tgt, config['test_seq_len'])
 
     if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
@@ -195,7 +195,7 @@ def get_ds(config, ddp_enabled):
 
 def get_model(config, vocab_src_len, vocab_tgt_len):
     model = build_transformer(src_vocab_size=vocab_src_len, tgt_vocab_size=vocab_tgt_len,
-                              src_seq_len=config['seq_len'], tgt_seq_len=config['seq_len'],
+                              src_seq_len=config['train_seq_len'], tgt_seq_len=config['train_seq_len'],
                               d_model=config['d_model'])
     return model
 
@@ -347,7 +347,7 @@ def train_model(config):
                 "train_size": config['train_size'],
                 "epochs": config['num_epochs'], 
                 "batch_size": config['batch_size'],
-                "max_seq_len": config['seq_len'],
+                "max_seq_len": config['train_seq_len'],
                 "hidden_dim": config['d_model'],
                 "beam_size": config['beam_size'],      
             },
