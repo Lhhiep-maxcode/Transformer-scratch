@@ -18,18 +18,32 @@ class LayerNormalization(nn.Module):
         std = x.std(dim = -1, keepdim = True) # (batch, seq_len, 1)
         # eps is to prevent dividing by zero or when std is very small
         return self.alpha * (x - mean) / (std + self.eps) + self.bias
+    
+class SwiGLU(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.linear_1 = nn.Linear(d_model,d_model)
+        self.linear_2 = nn.Linear(d_model,d_model)
+
+    def forward(self, x):
+        output = self.linear_1(x)
+        swish = output * torch.sigmoid(output)
+        swiglu = swish * self.linear_2(x)
+
+        return swiglu
 
 class FeedForwardBlock(nn.Module):
 
     def __init__(self, d_model: int, d_ff: int, dropout: float) -> None:
         super().__init__()
         self.linear_1 = nn.Linear(d_model, d_ff) # w1 and b1
+        self.swiglu = SwiGLU(d_ff)
         self.dropout = nn.Dropout(dropout)
         self.linear_2 = nn.Linear(d_ff, d_model) # w2 and b2
 
     def forward(self, x):
         # (batch, seq_len, d_model) --> (batch, seq_len, d_ff) --> (batch, seq_len, d_model)
-        return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
+        return self.linear_2(self.dropout(self.swiglu(self.linear_1(x))))
 
 class InputEmbeddings(nn.Module):
 
