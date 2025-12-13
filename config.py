@@ -7,7 +7,7 @@ def get_config():
         "train_size": 0.05,   
         "val_size": 1 / 30000,     
         "batch_size": 64,
-        "num_epochs": 8,
+        "num_epochs": 20,
         "peak_lr": 7e-4,
         "warmup_steps": 4000,
         "seq_len": 102,
