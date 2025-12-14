@@ -3,12 +3,12 @@ import re
 
 def get_config():
     return {
-        "train_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
-        "test_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
+        "train_path": ["C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv"],
+        "test_path": ["C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv"],
         "test_only": False,
-        "train_size": 0.9,   
-        "val_size": 0.1,     
-        "batch_size": 1,
+        "train_size": 0.05,   
+        "val_size": 1/30000,     
+        "batch_size": 64,
         "num_epochs": 20,
         "peak_lr": 7e-4,
         "warmup_steps": 4000,

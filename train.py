@@ -12,7 +12,7 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
-from dataset import BilingualDataset, causal_mask
+from dataset import BilingualDataset, causal_mask, LengthBasedCurriculumSampler
 from torch.utils.data import Dataset, DataLoader, random_split
 from model import build_transformer
 from config import get_config, get_weights_file_path, latest_weights_file_path
@@ -59,6 +59,30 @@ def shuffle_parallel_lists(en, vi, seed=42):
 
     en_shuffled, vi_shuffled = zip(*paired)
     return list(en_shuffled), list(vi_shuffled)
+
+def compute_level(train_ds, tokenizer_src, tokenizer_tgt, type_metric="LENGTHS"):
+    if type_metric == "LENGTHS":
+        lengths = [len(item) for item in train_ds]
+        return lengths
+    elif type_metric == "TF_IDF":
+        res = []
+        vocab_src = tokenizer_src.get_vocab()
+        vocab_tgt = tokenizer_tgt.get_vocab()
+        for i in range(len(train_ds)):
+            count = 0
+            src_txt = train_ds[i]['src_text']
+            tgt_txt = train_ds[i]['tgt_text']
+            for c in src_txt:
+                if c in vocab_src:
+                    count += vocab_src[c]
+
+            for c in tgt_txt:
+                if c in vocab_tgt:
+                    count += vocab_tgt[c]
+            
+            res.append(count // (len(src_txt) + len(tgt_txt)))
+        print("TF-IDF levels computed", res)
+        return res
 
 
 def get_ds(config):
@@ -147,8 +171,19 @@ def get_ds(config):
     print(f"Training size: {len(train_ds)} sentences")
     print(f"Validation size: {len(val_ds)} sentences")
     print(f"Test size: {len(test_ds)} sentences")
+    print(f"Sample: {train_ds[0]}")
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, drop_last=True)
+    
+    levels = compute_level(train_ds, tokenizer_src, tokenizer_tgt, type_metric="TF_IDF") # Precompute lengths
+    
+    total_training_steps = config['num_epochs'] * (len(train_ds) // config['batch_size'])
+    batch_size = config['batch_size']
+    
+    sampler = LengthBasedCurriculumSampler(
+        levels, batch_size, total_steps=total_training_steps
+    )
+
+    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], drop_last=True, sampler=sampler)
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
     test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
 

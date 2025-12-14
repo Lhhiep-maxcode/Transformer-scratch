@@ -6,3 +6,8 @@ runs/
 weights/
 
 wandb/
+env/
+*.ipynb
+*.zip
+*.txt
+*.wandb
