@@ -19,15 +19,14 @@ def get_config():
         "preload_path": None,
         "model_folder": "weights",
         "model_basename": "tmodel_",
-        "tokenizer_file": "tokenizer_{0}.json",
+        "tokenizer_file": "wordlevel_tokenizer_{0}.json",
         "experiment_name": "runs/tmodel",
         "random_seed": 42,
         # wandb log
-        "wandb_key": None,
+        "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825", 
         "wandb_project_name": "Transformer from scratch",
-        "wandb_experiment_name": "Init experiment",
+        "wandb_experiment_name": "V4: V2 + RoPE",
         "wandb_experiment_id": None,
-        
     }
 
 def get_weights_file_path(config, epoch: int):
