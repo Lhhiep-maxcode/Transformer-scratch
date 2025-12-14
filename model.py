@@ -43,37 +43,6 @@ class InputEmbeddings(nn.Module):
         # (batch, seq_len) --> (batch, seq_len, d_model)
         # Multiply by sqrt(d_model) to scale the embeddings according to the paper
         return self.embedding(x) * math.sqrt(self.d_model)
-    
-class PositionalEncoding(nn.Module):
-
-    def __init__(self, d_model: int, seq_len: int, dropout: float, type="Sinusoidal") -> None:
-        super().__init__()
-        self.sinusoidal_positional_encoding(d_model, seq_len, dropout)
-        
-
-    def sinusoidal_positional_encoding(self, d_model: int, seq_len: int, dropout: float) -> None:
-        self.d_model = d_model
-        self.seq_len = seq_len
-        self.dropout = nn.Dropout(dropout)
-        # Create a matrix of shape (seq_len, d_model)
-        pe = torch.zeros(seq_len, d_model)
-        # Create a vector of shape (seq_len)
-        position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1) # (seq_len, 1)
-        # Create a vector of shape (d_model)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
-        # Apply sine to even indices
-        pe[:, 0::2] = torch.sin(position * div_term) # sin(position * (10000 ** (2i / d_model))
-        # Apply cosine to odd indices
-        pe[:, 1::2] = torch.cos(position * div_term) # cos(position * (10000 ** (2i / d_model))
-        # Add a batch dimension to the positional encoding
-        pe = pe.unsqueeze(0) # (1, seq_len, d_model)
-        # Register the positional encoding as a buffer
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
-        return self.dropout(x)
-
 
 class RotationalPositionalEncoding(nn.Module):
 
@@ -255,14 +224,12 @@ class ProjectionLayer(nn.Module):
     
 class Transformer(nn.Module):
 
-    def __init__(self, encoder: Encoder, decoder: Decoder, src_embed: InputEmbeddings, tgt_embed: InputEmbeddings, src_pos: PositionalEncoding, tgt_pos: PositionalEncoding, projection_layer: ProjectionLayer) -> None:
+    def __init__(self, encoder: Encoder, decoder: Decoder, src_embed: InputEmbeddings, tgt_embed: InputEmbeddings, projection_layer: ProjectionLayer) -> None:
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.src_embed = src_embed
         self.tgt_embed = tgt_embed
-        self.src_pos = src_pos
-        self.tgt_pos = tgt_pos
         self.projection_layer = projection_layer
 
     def encode(self, src, src_mask):
@@ -291,10 +258,6 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     # Create the embedding layers
     src_embed = InputEmbeddings(d_model, src_vocab_size)
     tgt_embed = InputEmbeddings(d_model, tgt_vocab_size)
-
-    # Create the positional encoding layers
-    src_pos = PositionalEncoding(d_model, src_seq_len, dropout)
-    tgt_pos = PositionalEncoding(d_model, tgt_seq_len, dropout)
     
     # Create the encoder blocks
     encoder_blocks = []
@@ -321,7 +284,7 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     projection_layer = ProjectionLayer(d_model, tgt_vocab_size)
     
     # Create the transformer
-    transformer = Transformer(encoder, decoder, src_embed, tgt_embed, src_pos, tgt_pos, projection_layer)
+    transformer = Transformer(encoder, decoder, src_embed, tgt_embed, projection_layer)
     
     # Initialize the parameters
     for p in transformer.parameters():
