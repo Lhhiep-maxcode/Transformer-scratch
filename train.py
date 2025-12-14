@@ -6,24 +6,23 @@ import torch.nn.functional as F
 import wandb
 import pandas as pd
 import random
+import os
+import numpy as np
+import torch.distributed as dist
 from comet import download_model, load_from_checkpoint
-from datasets import load_dataset
+from torch.utils.data.distributed import DistributedSampler
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from dataset import BilingualDataset, causal_mask
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader
 from model import build_transformer
 from config import get_config, get_weights_file_path, latest_weights_file_path
 from tqdm import tqdm
 from infer import greedy_search, beam_search
 from pathlib import Path
 
-import random
-import numpy as np
-import torch
-import os
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -61,8 +60,11 @@ def shuffle_parallel_lists(en, vi, seed=42):
     return list(en_shuffled), list(vi_shuffled)
 
 
-def get_ds(config):
-    print('='*10, 'Data Preparation', '='*10)
+def get_ds(config, ddp_enabled):
+    # Only print on Rank 0
+    if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
+        print('='*10, 'Data Preparation', '='*10)
+        
     en_list = []
     vi_list = []
     for path in config['train_path']:
@@ -73,8 +75,22 @@ def get_ds(config):
     en_list, vi_list = shuffle_parallel_lists(en_list, vi_list, seed=config['random_seed'])
 
     # get tokenizer
-    tokenizer_tgt = get_or_build_tokenizer(config, vi_list, 'vi')
-    tokenizer_src = get_or_build_tokenizer(config, en_list, 'en')
+    if ddp_enabled:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        # If Rank 0, build the tokenizer
+        if local_rank == 0:
+            get_or_build_tokenizer(config, vi_list, 'vi')
+            get_or_build_tokenizer(config, en_list, 'en')
+        
+        # Everyone waits here until Rank 0 is done
+        dist.barrier()
+        
+        # Now everyone loads it safely
+        tokenizer_tgt = get_or_build_tokenizer(config, vi_list, 'vi')
+        tokenizer_src = get_or_build_tokenizer(config, en_list, 'en')
+    else:
+        tokenizer_tgt = get_or_build_tokenizer(config, vi_list, 'vi')
+        tokenizer_src = get_or_build_tokenizer(config, en_list, 'en')
     
     total_data = len(en_list)
 
@@ -95,20 +111,20 @@ def get_ds(config):
     en_list = filtered_en_list
     vi_list = filtered_vi_list
 
-    print(f"Filter and get {len(en_list)} / {total_data} sentences")
-    print("Data Example:")
-    count = 0
-    for i in range(1, 6):
-        print(f"English:     ", en_list[i])
-        print(f"Vietnamese:  ", vi_list[i])
-        print()
-        print(f"English:     ", en_list[-i])
-        print(f"Vietnamese:  ", vi_list[-i])
-        print()
-        count += 1
-        if count > 5:
-            break
-
+    if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
+        print(f"Filter and get {len(en_list)} / {total_data} sentences")
+        print("Data Example:")
+        count = 0
+        for i in range(1, 6):
+            print(f"English:     ", en_list[i])
+            print(f"Vietnamese:  ", vi_list[i])
+            print()
+            print(f"English:     ", en_list[-i])
+            print(f"Vietnamese:  ", vi_list[-i])
+            print()
+            count += 1
+            if count > 5:
+                break
     
     # Train, valid split
     train_en = en_list[:int(config['train_size'] * len(en_list))]
@@ -144,17 +160,37 @@ def get_ds(config):
     val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['train_seq_len'])
     test_ds = BilingualDataset(test_en, test_vi, tokenizer_src, tokenizer_tgt, config['test_seq_len'])
 
-    print(f"Training size: {len(train_ds)} sentences")
-    print(f"Validation size: {len(val_ds)} sentences")
-    print(f"Test size: {len(test_ds)} sentences")
+    if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
+        print(f"Training size: {len(train_ds)} sentences")
+        print(f"Validation size: {len(val_ds)} sentences")
+        print(f"Test size: {len(test_ds)} sentences")
+        print('='*30)
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, drop_last=True)
+    if ddp_enabled:
+        train_sampler = DistributedSampler(train_ds)
+        train_dataloader = DataLoader(
+            train_ds,
+            batch_size=config['batch_size'],
+            sampler=train_sampler,
+            num_workers=2,
+            pin_memory=True,
+            drop_last=True
+        )
+    else:
+        train_sampler = None
+        train_dataloader = DataLoader(
+            train_ds,
+            batch_size=config['batch_size'],
+            shuffle=True,
+            num_workers=2,
+            drop_last=True
+        )
+
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
     test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
-
     print('='*30)
 
-    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt
+    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, train_sampler
     
 
 def get_model(config, vocab_src_len, vocab_tgt_len):
@@ -170,6 +206,12 @@ def count_parameters(model):
     print(f"Total parameters: {total}")
     print(f"Trainable parameters: {trainable}")
 
+def load_comet_model(device):
+    model_path = download_model("Unbabel/wmt22-comet-da")
+    comet_model = load_from_checkpoint(model_path)
+    comet_model.to(device)
+    comet_model.eval()
+    return comet_model
 
 def load_comet_model(device):
     model_path = download_model("Unbabel/wmt22-comet-da")
@@ -221,8 +263,12 @@ def run_validation(
 
             assert encoder_input.size(0) == 1, "Batch size must be 1"
 
-            model_out_greedy = greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
-            model_out_beam = beam_search(model, config['beam_size'], encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            if hasattr(model, 'module'):
+                model_out_greedy = greedy_search(model.module, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+                model_out_beam = beam_search(model.module, config['beam_size'], encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            else:
+                model_out_greedy = greedy_search(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+                model_out_beam = beam_search(model, config['beam_size'], encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
 
             source_text = batch["src_text"][0]
             target_text = batch["tgt_text"][0]
@@ -270,7 +316,6 @@ def run_validation(
     print(f"| COMET-DA score: {comet_score:.4f}")
 
 
-
 def transformer_lr_lambda(step, d_model, warmup_steps, peak_lr):
     """
     Paper formula:
@@ -281,32 +326,24 @@ def transformer_lr_lambda(step, d_model, warmup_steps, peak_lr):
 
 
 def train_model(config):
-    set_seed(config['random_seed'])
-    gc.collect()
-    device = "cuda" if torch.cuda.is_available() else "mps" if torch.has_mps or torch.backends.mps.is_available() else "cpu"
-    print("Using device:", device)
-    if (device == 'cuda'):
-        print(f"Device name: {torch.cuda.get_device_name(device.index)}")
-        print(f"Device memory: {torch.cuda.get_device_properties(device.index).total_memory / 1024 ** 3} GB")
-    elif (device == 'mps'):
-        print(f"Device name: <mps>")
+    if "LOCAL_RANK" in os.environ:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl")
+        ddp_enabled = True
     else:
-        print("NOTE: If you have a GPU, consider using it for training.")
-        print("      On a Windows machine with NVidia GPU, check this video: https://www.youtube.com/watch?v=GMSjDTU8Zlc")
-        print("      On a Mac machine, run: pip3 install --pre torch torchvision torchaudio torchtext --index-url https://download.pytorch.org/whl/nightly/cpu")
-    device = torch.device(device)
+        local_rank = 0
+        ddp_enabled = False
 
+    set_seed(config['random_seed'])
 
-    Path(f"{config['model_folder']}").mkdir(parents=True, exist_ok=True)
-    train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
-    model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
-    count_parameters(model)
+    device = torch.device(f"cuda:{local_rank}")
 
-    # Load comet-DA model for evaluation
     comet_model = None
-    comet_model = load_comet_model(device)
+    if local_rank == 0:
+        comet_model = load_comet_model(device)
 
-    if config['wandb_key'] is not None:
+    if local_rank == 0 and config['wandb_key'] is not None:
         wandb.login(key=config['wandb_key'])
         run = wandb.init(
             project=config['wandb_project_name'],  # Specify your project
@@ -323,6 +360,17 @@ def train_model(config):
                 "beam_size": config['beam_size'],      
             },
         )
+    else:
+        run = None
+
+    Path(f"{config['model_folder']}").mkdir(parents=True, exist_ok=True)
+    train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, train_sampler = get_ds(config, ddp_enabled)
+
+    model = get_model(
+        config,
+        tokenizer_src.get_vocab_size(),
+        tokenizer_tgt.get_vocab_size()
+    ).to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -331,7 +379,6 @@ def train_model(config):
         eps=1e-9,
         weight_decay=0.01
     )
-
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lr_lambda=lambda step: transformer_lr_lambda(
@@ -342,30 +389,43 @@ def train_model(config):
         )
     )
 
-    # If the user specified a model to preload before training, load it
+    # Load previous training state
     initial_epoch = 0
     global_step = 0
     preload_path = config['preload_path']
     if preload_path:
-        print(f'Preloading model {preload_path}')
-        state = torch.load(preload_path)
+        if local_rank == 0: print(f'Preloading model {preload_path}')
+        state = torch.load(preload_path, map_location=f"cuda:{local_rank}")
         model.load_state_dict(state['model_state_dict'])
         optimizer.load_state_dict(state['optimizer_state_dict'])
         scheduler.load_state_dict(state['scheduler_state_dict'])
         initial_epoch = state['epoch'] + 1
         global_step = state['global_step']
     else:
-        print('No model to preload, starting from scratch')
+        if local_rank == 0: print('No model to preload, starting from scratch')
 
+    if ddp_enabled:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank
+        )
+    
+    if local_rank == 0: count_parameters(model)
+
+    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
     if config['test_only'] == False:
         for epoch in range(initial_epoch, config['num_epochs']):
-            if device == "cuda":
-                torch.cuda.empty_cache()
+            if ddp_enabled:
+                train_sampler.set_epoch(epoch)
 
             model.train()
-            batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
+            if local_rank == 0:
+                batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
+            else:
+                batch_iterator = train_dataloader
 
             losses = []
 
@@ -376,44 +436,45 @@ def train_model(config):
                 decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
                 label = batch['label'].to(device) # (B, seq_len)
 
-                # ===== Forward =====
-                encoder_output = model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
-                decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
-                proj_output = model.project(decoder_output) # (B, seq_len, vocab_size)
+                optimizer.zero_grad(set_to_none=True)
 
-                # Compute the loss using a simple cross entropy
-                # loss((B * seq_len, vocab_size), (B * seq_len))
-                loss = loss_fn(
-                    proj_output.view(-1, tokenizer_tgt.get_vocab_size()), 
-                    label.view(-1)
-                )
+                # ===== Forward =====
+                # Autocast handles the casting (FP32 -> FP16 -> FP32) dynamically
+                with torch.amp.autocast('cuda', enabled=(device.type == "cuda")):
+                    proj_output = model(encoder_input, encoder_mask, decoder_input, decoder_mask)
+
+                    # Compute the loss using a simple cross entropy
+                    # loss((B * seq_len, vocab_size), (B * seq_len))
+                    loss = loss_fn(
+                        proj_output.view(-1, tokenizer_tgt.get_vocab_size()), 
+                        label.view(-1)
+                    )
 
                 # ===== Backprop =====
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-                # Update the weights
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
+                
                 scheduler.step()
-
                 global_step += 1
                 losses.append(loss.item())
                 
-                current_lr = scheduler.get_last_lr()[0]
-                batch_iterator.set_postfix({
-                    "loss": f"{loss.item():6.3f}",
-                    "lr": f"{current_lr:.2e}"
-                })
+                if local_rank == 0:
+                    current_lr = scheduler.get_last_lr()[0]
+                    batch_iterator.set_postfix({
+                        "loss": f"{loss.item():6.3f}",
+                        "lr": f"{current_lr:.2e}"
+                    })
 
-                # Log the loss
-                if global_step % 10 == 0 and config['wandb_key'] is not None:
-                    run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})
+                    if global_step % 10 == 0 and config['wandb_key'] is not None:
+                        run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})
 
             avg_loss = torch.mean(torch.tensor(losses))
             print('| Average Training-Loss : {:.4f}'.format(avg_loss))
-            if config['wandb_key'] is not None:
+
+            if config['wandb_key'] is not None and local_rank == 0:
                 run.log({'Train loss (epoch)': avg_loss})
                 run_validation(
                     model, val_dataloader, tokenizer_src, 
@@ -421,7 +482,7 @@ def train_model(config):
                     epoch, run, config, 
                     comet_model, num_examples=100
                 )
-            else:
+            elif local_rank == 0:
                 run_validation(
                     model, val_dataloader, tokenizer_src, 
                     tokenizer_tgt, config["train_seq_len"], device, 
@@ -430,33 +491,38 @@ def train_model(config):
                 )
 
             # Save the model at the end of every epoch
-            model_filename = get_weights_file_path(config, f"{epoch:02d}")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'global_step': global_step
-            }, model_filename)
-    
-    if config['wandb_key'] is not None:
-        run.log({'Train loss (epoch)': avg_loss})
-        run_validation(
-            model, test_dataloader, tokenizer_src, 
-            tokenizer_tgt, config["test_seq_len"], device, 
-            "test", run, config, 
-            comet_model, num_examples=100
-        )
-    else:
-        run_validation(
-            model, test_dataloader, tokenizer_src, 
-            tokenizer_tgt, config["test_seq_len"], device, 
-            "test", None, config, 
-            comet_model, num_examples=100
-        )
-    
+            if local_rank == 0:
+                # Save model.module.state_dict() if DDP is on, else model.state_dict()
+                model_to_save = model.module if ddp_enabled else model
+                model_filename = get_weights_file_path(config, f"{epoch:02d}")
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model_to_save.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'global_step': global_step
+                }, model_filename)
+
+    if local_rank == 0:
+        if config['wandb_key'] is not None:
+            run.log({'Train loss (epoch)': avg_loss})
+            run_validation(
+                model, test_dataloader, tokenizer_src, 
+                tokenizer_tgt, config["test_seq_len"], device, 
+                "test", run, config, 
+                comet_model, num_examples=100
+            )
+        else:
+            run_validation(
+                model, test_dataloader, tokenizer_src, 
+                tokenizer_tgt, config["test_seq_len"], device, 
+                "test", None, config, 
+                comet_model, num_examples=100
+            )
+
 
 if __name__ == '__main__':
+    # torchrun --nproc_per_node=2 train.py
     warnings.filterwarnings("ignore")
     config = get_config()
     train_model(config)
