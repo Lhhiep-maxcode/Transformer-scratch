@@ -12,7 +12,7 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
-from dataset import BilingualDataset, causal_mask, LengthBasedCurriculumSampler
+from dataset import BilingualDataset, causal_mask, LengthBasedCurriculumBatchSampler
 from torch.utils.data import Dataset, DataLoader, random_split
 from model import build_transformer
 from config import get_config, get_weights_file_path, latest_weights_file_path
@@ -174,22 +174,22 @@ def get_ds(config):
     print(f"Sample: {train_ds[0]}")
 
     
-    levels = compute_level(train_ds, tokenizer_src, tokenizer_tgt, type_metric="TF_IDF") # Precompute lengths
+    levels = compute_level(train_ds, tokenizer_src, tokenizer_tgt, type_metric="LENGTHS") # Precompute lengths
     
     total_training_steps = config['num_epochs'] * (len(train_ds) // config['batch_size'])
     batch_size = config['batch_size']
     
-    sampler = LengthBasedCurriculumSampler(
+    sampler = LengthBasedCurriculumBatchSampler(
         levels, batch_size, total_steps=total_training_steps
     )
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], drop_last=True, sampler=sampler)
+    train_dataloader = DataLoader(train_ds, batch_sampler=sampler)
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
     test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
 
     print('='*30)
 
-    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt
+    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, sampler
     
 
 def get_model(config, vocab_src_len, vocab_tgt_len):
@@ -333,7 +333,7 @@ def train_model(config):
 
 
     Path(f"{config['model_folder']}").mkdir(parents=True, exist_ok=True)
-    train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
+    train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, sampler = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
     count_parameters(model)
 
@@ -441,6 +441,8 @@ def train_model(config):
                     "loss": f"{loss.item():6.3f}",
                     "lr": f"{current_lr:.2e}"
                 })
+
+                sampler.step(1)
 
                 # Log the loss
                 if global_step % 10 == 0 and config['wandb_key'] is not None:

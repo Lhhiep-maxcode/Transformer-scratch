@@ -3,8 +3,8 @@ import re
 
 def get_config():
     return {
-        "train_path": ["C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv"],
-        "test_path": ["C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv"],
+        "train_path": ["/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv"],
+        "test_path": ["/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv"],
         "test_only": False,
         "train_size": 0.05,   
         "val_size": 1/30000,     
@@ -23,9 +23,9 @@ def get_config():
         "experiment_name": "runs/tmodel",
         "random_seed": 42,
         # wandb log
-        "wandb_key": None,
+        "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825",
         "wandb_project_name": "Transformer from scratch",
-        "wandb_experiment_name": "Init experiment",
+        "wandb_experiment_name": "v9: v2 + LENGTHS curriculum",
         "wandb_experiment_id": None,
         
     }
