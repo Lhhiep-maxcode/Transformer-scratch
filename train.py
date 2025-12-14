@@ -11,7 +11,6 @@ import numpy as np
 import torch.distributed as dist
 from comet import download_model, load_from_checkpoint
 from torch.utils.data.distributed import DistributedSampler
-from torchmetrics.text import CharErrorRate, WordErrorRate, BLEUScore
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
@@ -213,6 +212,14 @@ def load_comet_model(device):
     comet_model.to(device)
     comet_model.eval()
     return comet_model
+
+def load_comet_model(device):
+    model_path = download_model("Unbabel/wmt22-comet-da")
+    comet_model = load_from_checkpoint(model_path)
+    comet_model.to(device)
+    comet_model.eval()
+    return comet_model
+
 
 def log_validation_results(
     source_texts, expected, predicted_greedy, predicted_beam, 
