@@ -3,17 +3,18 @@ import re
 
 def get_config():
     return {
-        "train_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
-        "test_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
+        "train_path": ['C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv'],
+        "test_path": ['C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv'],
         "test_only": False,
         "train_size": 0.9,   
-        "val_size": 0.1,     
-        "batch_size": 1,
+        "val_size": 0.1,  
+        "batch_size_max": 128,
+        "batch_size_base": 64,
         "num_epochs": 20,
-        "peak_lr": 7e-4,
         "warmup_steps": 4000,
         "train_seq_len": 102,
-        "test_seq_len": 302,
+        "test_seq_len": 302,   
+        "peak_lr": 7e-4,
         "d_model": 512,
         "beam_size": 5,
         "preload_path": None,
@@ -24,8 +25,8 @@ def get_config():
         "random_seed": 42,
         # wandb log
         "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825", 
-        "wandb_project_name": "Transformer from scratch",
-        "wandb_experiment_name": "V4: V2 + RoPE",
+        "wandb_project_name": "Transformer from scratch CQCAN",
+        "wandb_experiment_name": "V5: V2 + accumulate grad + batch size 256",
         "wandb_experiment_id": None,
     }
 
