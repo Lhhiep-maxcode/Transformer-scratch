@@ -3,15 +3,18 @@ import re
 
 def get_config():
     return {
-        "data_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'], #C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv | /kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv
+        "train_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'], #C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv | /kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv
+        "test_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
+        "test_only": False,
         "train_size": 0.05,   
         "val_size": 1 / 30000,     
-        "batch_size_max": 256,
+        "batch_size_max": 128,
         "batch_size_base": 64,
         "num_epochs": 20,
         "peak_lr": 7e-4,
         "warmup_steps": 4000,
-        "seq_len": 102,
+        "train_seq_len": 102,
+        "test_seq_len": 302,
         "d_model": 512,
         "beam_size": 5,
         "preload_path": None,
@@ -22,8 +25,8 @@ def get_config():
         "random_seed": 42,
         # wandb log
         "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825", 
-        "wandb_project_name": "Transformer from scratch CQCAN",
-        "wandb_experiment_name": "V5: V2 + accumulate grad + batch size 256",
+        "wandb_project_name": "Transformer from scratch",
+        "wandb_experiment_name": "V6: V2 + accumulate grad + batch size 128",
         "wandb_experiment_id": None,
     }
 
