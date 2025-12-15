@@ -322,6 +322,65 @@ def transformer_lr_lambda(step, d_model, warmup_steps, peak_lr):
     step = max(step, 1)
     return peak_lr * (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5)) / ((warmup_steps ** -0.5) * (d_model ** -0.5))
 
+import torch
+
+def switchout(trg, vocab_size, tau=0.1, pad_idx=0, sos_idx=1, eos_idx=2):
+    """
+    Apply SwitchOut on batch target.
+    
+    Args:
+        trg (Tensor): Batch target [batch_size, seq_len]
+        vocab_size (int): size of vocabulary
+        tau (float): statistical parameter controlling the noise level
+        pad_idx, sos_idx, eos_idx: index of special tokens to be protected
+    
+    Returns:
+        Tensor: target after applying SwitchOut
+    """
+    
+    # 1. Tạo mask xác định vị trí sẽ bị thay thế
+    mask = (torch.rand(trg.shape, device=trg.device) < tau)
+    
+    # 2. BẢO VỆ CÁC TOKEN ĐẶC BIỆT (Rất quan trọng)
+    special_tokens_mask = (trg == pad_idx) | (trg == sos_idx) | (trg == eos_idx)
+    
+    # Loại bỏ các vị trí đặc biệt khỏi mask thay thế
+    mask = mask & (~special_tokens_mask)
+    
+    # 3. Tạo tensor ngẫu nhiên chứa các từ mới
+    random_words = torch.randint(0, vocab_size, trg.shape, device=trg.device)
+    
+    # 4. Tráo đổi
+    # Tại đâu mask là True -> lấy random_words
+    # Tại đâu mask là False -> giữ nguyên trg gốc
+    corrupted_trg = torch.where(mask, random_words, trg)
+    
+    return corrupted_trg
+
+def get_tau_schedule(current_epoch, total_epochs, min_tau=0.05, max_tau=0.2):
+    """
+    Tính toán giá trị tau tăng dần tuyến tính theo số epoch.
+    
+    Args:
+        current_epoch (int): Epoch hiện tại (bắt đầu từ 0)
+        total_epochs (int): Tổng số epoch định train
+        min_tau (float): Giá trị tau khởi điểm (khi epoch = 0)
+        max_tau (float): Giá trị tau kết thúc (khi epoch = last)
+        
+    Returns:
+        float: Giá trị tau cho epoch hiện tại
+    """
+    # Đảm bảo không chia cho 0
+    if total_epochs <= 1:
+        return max_tau
+        
+    # Tính tỷ lệ tiến độ (từ 0.0 đến 1.0)
+    progress = current_epoch / (total_epochs - 1)
+    
+    # Công thức nội suy tuyến tính: y = y1 + (y2 - y1) * x
+    current_tau = min_tau + (max_tau - min_tau) * progress
+    
+    return current_tau
 
 def train_model(config):
     if "LOCAL_RANK" in os.environ:
@@ -415,6 +474,10 @@ def train_model(config):
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
     number_of_iteration = config['batch_size_max'] // config['batch_size_base']
 
+    pad_idx = tokenizer_tgt.token_to_id('[PAD]')     
+    sos_idx = tokenizer_tgt.token_to_id('[SOS]')     
+    eos_idx = tokenizer_tgt.token_to_id('[EOS]')     
+    tgt_vocab_size = tokenizer_tgt.get_vocab_size() 
     if config['test_only'] == False:
         for epoch in range(initial_epoch, config['num_epochs']):
             if ddp_enabled:
@@ -436,6 +499,17 @@ def train_model(config):
                 encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
                 decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
                 label = batch['label'].to(device) # (B, seq_len)
+
+                # Apply SwitchOut data augmentation
+                get_tau = get_tau_schedule(epoch, config['num_epochs'], min_tau=config['min_tau'], max_tau=config['max_tau'])
+                decoder_input = switchout(
+                    decoder_input, 
+                    vocab_size=tgt_vocab_size, 
+                    tau=get_tau,
+                    pad_idx=pad_idx, 
+                    sos_idx=sos_idx, 
+                    eos_idx=eos_idx
+                )
                 
                 # ===== Forward =====
                 # Autocast handles the casting (FP32 -> FP16 -> FP32) dynamically

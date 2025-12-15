@@ -15,6 +15,8 @@ def get_config():
         "train_seq_len": 102,
         "test_seq_len": 302,   
         "peak_lr": 7e-4,
+        "min_tau": 0.1,
+        "max_tau": 0.2,
         "d_model": 512,
         "beam_size": 5,
         "preload_path": None,
@@ -26,7 +28,7 @@ def get_config():
         # wandb log
         "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825", 
         "wandb_project_name": "Transformer from scratch CQCAN",
-        "wandb_experiment_name": "V5: V2 + accumulate grad + batch size 256",
+        "wandb_experiment_name": "v7: v2 + switch out",
         "wandb_experiment_id": None,
     }
 
