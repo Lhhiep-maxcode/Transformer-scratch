@@ -3,7 +3,9 @@ import re
 
 def get_config():
     return {
-        "data_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
+        "train_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
+        "test_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
+        "test_only": False,
         "train_size": 0.05,   
         "val_size": 1/30000,     
         "batch_size": 64,
@@ -12,7 +14,8 @@ def get_config():
         "warmup_steps": 4000,
         "min_tau": 0.1,
         "max_tau": 0.2,
-        "seq_len": 102,
+        "train_seq_len": 102,
+        "test_seq_len": 302,
         "d_model": 512,
         "beam_size": 5,
         "preload_path": None,
