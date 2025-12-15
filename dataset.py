@@ -1,5 +1,6 @@
 import torch
-from torch.utils.data import Dataset
+import numpy as np
+from torch.utils.data import Dataset, Sampler, BatchSampler
 
 class BilingualDataset(Dataset):
     def __init__(self, src_sentences, tgt_sentences, tokenizer_src, tokenizer_tgt, seq_len):
@@ -80,3 +81,109 @@ class BilingualDataset(Dataset):
 def causal_mask(size):
     mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
     return mask == 0
+
+class DistributedLengthBasedCurriculumBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        data_lengths,
+        batch_size,
+        start_percentile=0.1,
+        end_percentile=1.0,
+        total_steps=10000,
+        drop_last=True,
+        shuffle=True,
+        rank=None,
+        world_size=None,
+        seed=0,
+        ddp_enabled=True,  # <--- THAM SỐ MỚI
+    ):
+        """
+        Args:
+            ddp_enabled (bool): Nếu False, sẽ chạy chế độ Single GPU (rank=0, world_size=1).
+        """
+        self.data_lengths = np.asarray(data_lengths)
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.shuffle = shuffle
+        self.base_seed = seed
+        self.ddp_enabled = ddp_enabled # Lưu lại trạng thái
+
+        self.total_steps = total_steps
+        self.current_step = 0
+        self.epoch = 0
+
+        # --- LOGIC XỬ LÝ DDP ---
+        # Chỉ lấy thông tin từ dist nếu ddp_enabled=True VÀ dist đã được khởi tạo
+        if self.ddp_enabled and dist.is_available() and dist.is_initialized():
+            self.rank = dist.get_rank() if rank is None else rank
+            self.world_size = dist.get_world_size() if world_size is None else world_size
+        else:
+            # Fallback về chế độ Single Device
+            self.rank = 0
+            self.world_size = 1
+
+        # Sắp xếp index theo chiều dài
+        self.sorted_indices = np.argsort(self.data_lengths)
+        self.num_samples = len(self.sorted_indices)
+        
+        # Tính toán boundary
+        self.start_idx = max(1, int(start_percentile * self.num_samples))
+        self.final_idx = max(self.start_idx, int(end_percentile * self.num_samples))
+
+    def step(self, n: int = 1):
+        self.current_step += n
+
+    def set_epoch(self, epoch: int):
+        self.epoch = epoch
+
+    def _current_max_idx(self):
+        progress = min(1.0, self.current_step / self.total_steps)
+        max_idx = int(self.start_idx + progress * (self.final_idx - self.start_idx))
+        return max(self.start_idx, max_idx)
+
+    def __iter__(self):
+        max_idx = self._current_max_idx()
+        
+        # 1. Lấy dữ liệu global hợp lệ
+        eligible_global = self.sorted_indices[:max_idx]
+        
+        # 2. Xử lý chia hết cho world_size
+        # Nếu world_size=1 (tắt DDP), dòng này không thay đổi gì cả (vẫn giữ nguyên len)
+        total_eligible = len(eligible_global)
+        valid_len = (total_eligible // self.world_size) * self.world_size
+        eligible_global = eligible_global[:valid_len]
+
+        # 3. Shard cho từng rank
+        # Nếu world_size=1, cú pháp [0 :: 1] sẽ lấy toàn bộ list -> Đúng logic Single GPU
+        eligible = eligible_global[self.rank :: self.world_size]
+
+        # 4. Shuffle
+        if self.shuffle:
+            g = np.random.default_rng(seed=self.base_seed + self.epoch)
+            eligible = g.permutation(eligible)
+
+        # 5. Tạo batch
+        if self.drop_last:
+            num_batches = len(eligible) // self.batch_size
+            eligible = eligible[:num_batches * self.batch_size]
+        
+        batch = []
+        for idx in eligible:
+            batch.append(idx)
+            if len(batch) == self.batch_size:
+                yield batch
+                batch = []
+        
+        if len(batch) > 0 and not self.drop_last:
+            yield batch
+
+    def __len__(self):
+        max_idx = self._current_max_idx()
+        # Tính toán len tương thích với world_size
+        valid_len = (max_idx // self.world_size) * self.world_size
+        samples_per_rank = valid_len // self.world_size
+        
+        if self.drop_last:
+            return samples_per_rank // self.batch_size
+        else:
+            return (samples_per_rank + self.batch_size - 1) // self.batch_size

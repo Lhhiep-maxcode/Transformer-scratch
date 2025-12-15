@@ -28,7 +28,7 @@ def get_config():
         # wandb log
         "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825", 
         "wandb_project_name": "Transformer from scratch CQCAN",
-        "wandb_experiment_name": "v7: v2 + switch out",
+        "wandb_experiment_name": "v9: v2 + LENGTHS curriculum",
         "wandb_experiment_id": None,
     }
 

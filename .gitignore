@@ -22,3 +22,7 @@ v4 (v6 on kaggle)/
 *.ipynb
 *.zip
 *.txt
+*.ipynb
+*.zip
+*.txt
+*.wandb

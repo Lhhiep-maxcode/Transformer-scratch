@@ -15,8 +15,8 @@ from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
-from dataset import BilingualDataset, causal_mask
-from torch.utils.data import Dataset, DataLoader
+from dataset import BilingualDataset, causal_mask, DistributedLengthBasedCurriculumBatchSampler
+from torch.utils.data import Dataset, DataLoader, random_split
 from model import build_transformer
 from config import get_config, get_weights_file_path, latest_weights_file_path
 from tqdm import tqdm
@@ -63,6 +63,30 @@ def shuffle_parallel_lists(en, vi, seed=42):
 
     en_shuffled, vi_shuffled = zip(*paired)
     return list(en_shuffled), list(vi_shuffled)
+
+def compute_level(train_ds, tokenizer_src, tokenizer_tgt, type_metric="LENGTHS"):
+    if type_metric == "LENGTHS":
+        lengths = [len(item) for item in train_ds]
+        return lengths
+    elif type_metric == "TF_IDF":
+        res = []
+        vocab_src = tokenizer_src.get_vocab()
+        vocab_tgt = tokenizer_tgt.get_vocab()
+        for i in range(len(train_ds)):
+            count = 0
+            src_txt = train_ds[i]['src_text']
+            tgt_txt = train_ds[i]['tgt_text']
+            for c in src_txt:
+                if c in vocab_src:
+                    count += vocab_src[c]
+
+            for c in tgt_txt:
+                if c in vocab_tgt:
+                    count += vocab_tgt[c]
+            
+            res.append(count // (len(src_txt) + len(tgt_txt)))
+        print("TF-IDF levels computed", res)
+        return res
 
 
 def get_ds(config, ddp_enabled):
@@ -165,37 +189,27 @@ def get_ds(config, ddp_enabled):
     val_ds = BilingualDataset(val_en, val_vi, tokenizer_src, tokenizer_tgt, config['train_seq_len'])
     test_ds = BilingualDataset(test_en, test_vi, tokenizer_src, tokenizer_tgt, config['test_seq_len'])
 
-    if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
-        print(f"Training size: {len(train_ds)} sentences")
-        print(f"Validation size: {len(val_ds)} sentences")
-        print(f"Test size: {len(test_ds)} sentences")
-        print('='*30)
+    print(f"Training size: {len(train_ds)} sentences")
+    print(f"Validation size: {len(val_ds)} sentences")
+    print(f"Test size: {len(test_ds)} sentences")
+    print(f"Sample: {train_ds[0]}")
 
-    if ddp_enabled:
-        train_sampler = DistributedSampler(train_ds)
-        train_dataloader = DataLoader(
-            train_ds,
-            batch_size=config['batch_size_base'],
-            sampler=train_sampler,
-            num_workers=2,
-            pin_memory=True,
-            drop_last=True
-        )
-    else:
-        train_sampler = None
-        train_dataloader = DataLoader(
-            train_ds,
-            batch_size=config['batch_size_base'],
-            shuffle=True,
-            num_workers=2,
-            drop_last=True
-        )
+    
+    levels = compute_level(train_ds, tokenizer_src, tokenizer_tgt, type_metric="LENGTHS") # Precompute lengths
+    
+    total_training_steps = config['num_epochs'] * (len(train_ds) // config['batch_size_base'])
+    batch_size = config['batch_size_base']
+    
+    sampler = DistributedLengthBasedCurriculumBatchSampler(
+        levels, batch_size, total_steps=total_training_steps, ddp_enabled=ddp_enabled
+    )
 
+    train_dataloader = DataLoader(train_ds, batch_sampler=sampler, num_workers=2, pin_memory=True,)
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
     test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
     print('='*30)
 
-    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, train_sampler
+    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, sampler
     
 
 def get_model(config, vocab_src_len, vocab_tgt_len):
@@ -421,7 +435,7 @@ def train_model(config):
         run = None
 
     Path(f"{config['model_folder']}").mkdir(parents=True, exist_ok=True)
-    train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, train_sampler = get_ds(config, ddp_enabled)
+    train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, sampler = get_ds(config, ddp_enabled)
 
     model = get_model(
         config,
@@ -480,9 +494,8 @@ def train_model(config):
     tgt_vocab_size = tokenizer_tgt.get_vocab_size() 
     if config['test_only'] == False:
         for epoch in range(initial_epoch, config['num_epochs']):
-            if ddp_enabled:
-                train_sampler.set_epoch(epoch)
-
+            if hasattr(train_dataloader.batch_sampler, 'set_epoch'):
+                train_dataloader.batch_sampler.set_epoch(epoch)
             model.train()
             if local_rank == 0:
                 batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:04d}")
@@ -525,7 +538,7 @@ def train_model(config):
                 # ===== Backprop =====
 
                 scaler.scale(loss).backward()
-                if (i + 1) % number_of_iteration != 0:
+                if (i + 1) % number_of_iteration == 0:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
@@ -534,6 +547,7 @@ def train_model(config):
                     optimizer.zero_grad(set_to_none=True)
 
                     scheduler.step()
+                    sampler.step()
                 global_step += 1
                 losses.append(loss.item())
                 
