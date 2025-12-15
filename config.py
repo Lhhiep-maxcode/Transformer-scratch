@@ -3,9 +3,9 @@ import re
 
 def get_config():
     return {
-        "train_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
-        "test_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
-        "test_only": False,
+        "train_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
+        "test_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
+        "test_only": True,
         "train_size": 0.05,   
         "val_size": 1 / 30000,     
         "batch_size": 64,
@@ -16,14 +16,14 @@ def get_config():
         "test_seq_len": 302,
         "d_model": 512,
         "beam_size": 5,
-        "preload_path": None,
+        "preload_path": ['/kaggle/input/Transformers pre-train/v4_tmodel_18.pt'],
         "model_folder": "weights",
         "model_basename": "tmodel_",
         "tokenizer_file": "wordlevel_tokenizer_{0}.json",
         "experiment_name": "runs/tmodel",
         "random_seed": 42,
         # wandb log
-        "wandb_key": "43f4be04f69239630c28c8a79e7eb42eea331825", 
+        "wandb_key": "None", 
         "wandb_project_name": "Transformer from scratch",
         "wandb_experiment_name": "V4: V2 + RoPE",
         "wandb_experiment_id": None,
