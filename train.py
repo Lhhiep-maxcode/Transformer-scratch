@@ -22,6 +22,8 @@ from config import get_config, get_weights_file_path, latest_weights_file_path
 from tqdm import tqdm
 from infer import greedy_search, beam_search
 from pathlib import Path
+from datetime import timedelta
+
 
 
 def set_seed(seed=42):
@@ -179,6 +181,8 @@ def get_ds(config, ddp_enabled):
 
     if ddp_enabled:
         train_sampler = DistributedSampler(train_ds)
+        val_sampler = DistributedSampler(val_ds, shuffle=False)
+        test_sampler = DistributedSampler(test_ds, shuffle=False)
         train_dataloader = DataLoader(
             train_ds,
             batch_size=config['batch_size_base'],
@@ -189,6 +193,8 @@ def get_ds(config, ddp_enabled):
         )
     else:
         train_sampler = None
+        val_sampler = None
+        test_sampler = None
         train_dataloader = DataLoader(
             train_ds,
             batch_size=config['batch_size_base'],
@@ -197,10 +203,11 @@ def get_ds(config, ddp_enabled):
             drop_last=True
         )
 
-    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
-    test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
+    val_dataloader = DataLoader(val_ds, batch_size=1, sampler=val_sampler, shuffle=False)
+    test_dataloader = DataLoader(test_ds, batch_size=1, sampler=test_sampler, shuffle=False)
 
-    return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, train_sampler
+    return (train_dataloader, val_dataloader, test_dataloader, 
+            tokenizer_src, tokenizer_tgt, train_sampler)
     
 
 def get_model(config, vocab_src_len, vocab_tgt_len):
@@ -408,6 +415,12 @@ def train_model(config):
         if local_rank == 0: print('No model to preload, starting from scratch')
 
     if ddp_enabled:
+        # Increase timeout to 30 minutes
+        dist.init_process_group(
+            backend="nccl", 
+            init_method="env://", 
+            timeout=timedelta(minutes=30) 
+        )
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[local_rank],
@@ -482,24 +495,22 @@ def train_model(config):
                         run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})
 
             avg_loss = torch.mean(torch.tensor(losses))
+            dist.barrier()
+
+            run_validation(
+                model, val_dataloader, tokenizer_src, 
+                tokenizer_tgt, config["train_seq_len"], device, 
+                epoch, run if (local_rank == 0) else None, config, 
+                comet_model, num_examples=100
+            )
 
             if config['wandb_key'] is not None and local_rank == 0:
                 print('| Average Training-Loss : {:.4f}'.format(avg_loss))
                 run.log({'Train loss (epoch)': avg_loss})
-                run_validation(
-                    model, val_dataloader, tokenizer_src, 
-                    tokenizer_tgt, config["train_seq_len"], device, 
-                    epoch, run, config, 
-                    comet_model, num_examples=100
-                )
+                
             elif local_rank == 0:
                 print('| Average Training-Loss : {:.4f}'.format(avg_loss))
-                run_validation(
-                    model, val_dataloader, tokenizer_src, 
-                    tokenizer_tgt, config["train_seq_len"], device, 
-                    epoch, None, config, 
-                    comet_model, num_examples=100
-                )
+                
 
             # Save the model at the end of every epoch
             if local_rank == 0:
@@ -513,10 +524,11 @@ def train_model(config):
                     'scheduler_state_dict': scheduler.state_dict(),
                     'global_step': global_step
                 }, model_filename)
+                
+            dist.barrier()
 
     if local_rank == 0:
         if config['wandb_key'] is not None:
-            run.log({'Train loss (epoch)': avg_loss})
             run_validation(
                 model, test_dataloader, tokenizer_src, 
                 tokenizer_tgt, config["test_seq_len"], device, 
