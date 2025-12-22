@@ -490,7 +490,20 @@ def train_model(config):
                     })
 
                     if global_step % 10 == 0 and config['wandb_key'] is not None:
-                        run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})
+                        run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})                
+
+            # Save the model at the end of every epoch
+            if local_rank == 0:
+                # Save model.module.state_dict() if DDP is on, else model.state_dict()
+                model_to_save = model.module if ddp_enabled else model
+                model_filename = get_weights_file_path(config, f"{epoch:02d}")
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model_to_save.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'global_step': global_step
+                }, model_filename)
 
             avg_loss = torch.mean(torch.tensor(losses))
             dist.barrier()
@@ -508,20 +521,6 @@ def train_model(config):
                 
             elif local_rank == 0:
                 print('| Average Training-Loss : {:.4f}'.format(avg_loss))
-                
-
-            # Save the model at the end of every epoch
-            if local_rank == 0:
-                # Save model.module.state_dict() if DDP is on, else model.state_dict()
-                model_to_save = model.module if ddp_enabled else model
-                model_filename = get_weights_file_path(config, f"{epoch:02d}")
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model_to_save.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'global_step': global_step
-                }, model_filename)
                 
             dist.barrier()
 
