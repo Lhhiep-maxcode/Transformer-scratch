@@ -355,8 +355,7 @@ def train_model(config):
     device = torch.device(f"cuda:{local_rank}")
 
     comet_model = None
-    if local_rank == 0:
-        comet_model = load_comet_model(device)
+    comet_model = load_comet_model(device)
 
     if local_rank == 0 and config['wandb_key'] is not None:
         wandb.login(key=config['wandb_key'])
