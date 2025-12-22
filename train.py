@@ -337,9 +337,14 @@ def transformer_lr_lambda(step, d_model, warmup_steps, peak_lr):
 
 def train_model(config):
     if "LOCAL_RANK" in os.environ:
+        # Increase timeout to 30 minutes
         local_rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(
+            backend="nccl", 
+            init_method="env://", 
+            timeout=timedelta(minutes=30) 
+        )
         ddp_enabled = True
     else:
         local_rank = 0
@@ -415,12 +420,6 @@ def train_model(config):
         if local_rank == 0: print('No model to preload, starting from scratch')
 
     if ddp_enabled:
-        # Increase timeout to 30 minutes
-        dist.init_process_group(
-            backend="nccl", 
-            init_method="env://", 
-            timeout=timedelta(minutes=30) 
-        )
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[local_rank],
