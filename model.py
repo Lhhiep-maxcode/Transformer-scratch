@@ -45,44 +45,79 @@ class InputEmbeddings(nn.Module):
         return self.embedding(x) * math.sqrt(self.d_model)
 
 class RotationalPositionalEncoding(nn.Module):
-
-    def __init__(self, head_dim, seq_len) -> None:
+    def __init__(self, head_dim, seq_len=2048) -> None:
         super().__init__()
-        self.cos, self.sin = self.precompute_cos_sin(head_dim, seq_len)
-    
+        self.head_dim = head_dim
+        self.seq_len = seq_len
+        # Đăng ký buffer để PyTorch tự quản lý device (CPU/GPU) khi save/load model
+        # Khởi tạo ban đầu
+        cos, sin = self.precompute_cos_sin(head_dim, seq_len)
+        self.register_buffer('cos', cos)
+        self.register_buffer('sin', sin)
+
     def precompute_cos_sin(self, dim, seq_len, theta=10000.0):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        half = dim // 2
-        freq_seq = 1.0 / (theta ** (torch.arange(0, half, device=device) / half))
-
-        t = torch.arange(seq_len, device=device)
-        freqs = torch.einsum("i,j->ij", t, freq_seq)
-
-        # final shapes: [1, seq_len, dim]
-        cos = torch.cat([freqs.cos(), freqs.cos()], dim=-1).unsqueeze(0)
-        sin = torch.cat([freqs.sin(), freqs.sin()], dim=-1).unsqueeze(0)
+        # Không hardcode device ở đây, trả về tensor cpu/cuda tùy ngữ cảnh gọi
+        # Nhưng để đơn giản, ta tính toán trên CPU rồi chuyển device sau hoặc để PyTorch tự lo
+        freq_seq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        t = torch.arange(seq_len).float()
+        freqs = torch.outer(t, freq_seq) # (seq_len, dim/2)
+        
+        # Tạo cos/sin theo shape mà apply_rotary_pos_emb mong muốn
+        # Shape: (1, seq_len, dim)
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+        cos = freqs_cis.real
+        sin = freqs_cis.imag
+        
+        # Repeat để khớp với shape của head_dim (vì ta chỉ tính cho một nửa dim)
+        # Cách implement của bạn là cat([cos, cos]), ta làm tương tự
+        cos = torch.cat([cos, cos], dim=-1).unsqueeze(0)
+        sin = torch.cat([sin, sin], dim=-1).unsqueeze(0)
+        
         return cos, sin
 
     def apply_rotary_pos_emb(self, q, k, position_ids):
-        # Truyền head_dim vào precompute
-        cos = self.cos.squeeze(0)  # (seq_len, dim)
-        sin = self.sin.squeeze(0) # (seq_len, dim)
-        cos = cos[position_ids].unsqueeze(1)  # (batch, 1, seq_len, dim)
-        sin = sin[position_ids].unsqueeze(1)  # (batch, 1, seq_len, dim)
+        # 1. Kiểm tra xem độ dài chuỗi hiện tại có vượt quá cache không
+        curr_seq_len = position_ids.max().item() + 1
+        
+        # Nếu vượt quá, tính toán lại cache với độ dài mới lớn hơn
+        if curr_seq_len > self.cos.shape[1]:
+            # Tính dư ra một chút hoặc lấy đúng bằng curr_seq_len
+            new_len = int(curr_seq_len * 1.5) 
+            print(f"RoPE cache expanded from {self.cos.shape[1]} to {new_len}")
+            
+            cos, sin = self.precompute_cos_sin(self.head_dim, new_len)
+            
+            # Đưa về đúng device và dtype của input q
+            self.cos = cos.to(q.device).type_as(q)
+            self.sin = sin.to(q.device).type_as(q)
+
+        # 2. Lấy cos/sin từ cache (đảm bảo cùng device)
+        # Lưu ý: self.cos có thể đang ở device khác nếu model mới load, nên cần to(device) cho chắc ăn
+        if self.cos.device != q.device:
+             self.cos = self.cos.to(q.device)
+             self.sin = self.sin.to(q.device)
+
+        cos = self.cos.squeeze(0) # (seq_len, dim)
+        sin = self.sin.squeeze(0)
+        
+        # Lấy theo position_ids
+        cos = cos[position_ids].unsqueeze(1) # (batch, 1, seq_len, dim)
+        sin = sin[position_ids].unsqueeze(1)
 
         q_embed = (q * cos) + (self.rotate_every_two(q) * sin)
-        if k != None:
+        
+        k_embed = None
+        if k is not None:
             k_embed = (k * cos) + (self.rotate_every_two(k) * sin)
-        else:
-            k_embed = None
+            
         return q_embed, k_embed
-    
+
     def rotate_every_two(self, x):
         x1 = x[..., :x.shape[-1]//2]
         x2 = x[..., x.shape[-1]//2:]
         x_rotated = torch.cat((-x2, x1), dim=-1)
         return x_rotated
-
+    
 
 class ResidualConnection(nn.Module):
     
