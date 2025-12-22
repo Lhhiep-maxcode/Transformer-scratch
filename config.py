@@ -3,12 +3,13 @@ import re
 
 def get_config():
     return {
-        "train_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
-        "test_path": ['H:\Project\Transformer\English_Vietnamese_1.csv'],
+        "train_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'], #C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv | /kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv
+        "test_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
         "test_only": False,
-        "train_size": 0.9,   
-        "val_size": 0.1,     
-        "batch_size": 1,
+        "train_size": 0.05,   
+        "val_size": 1 / 30000,     
+        "batch_size_max": 128,
+        "batch_size_base": 64,
         "num_epochs": 20,
         "peak_lr": 7e-4,
         "warmup_steps": 4000,
@@ -25,7 +26,7 @@ def get_config():
         # wandb log
         "wandb_key": "None", 
         "wandb_project_name": "Transformer from scratch",
-        "wandb_experiment_name": "V4: V2 + RoPE",
+        "wandb_experiment_name": "V6: V2 + accumulate grad + batch size 128",
         "wandb_experiment_id": None,
     }
 

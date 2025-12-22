@@ -175,7 +175,7 @@ def get_ds(config, ddp_enabled):
         train_sampler = DistributedSampler(train_ds)
         train_dataloader = DataLoader(
             train_ds,
-            batch_size=config['batch_size'],
+            batch_size=config['batch_size_base'],
             sampler=train_sampler,
             num_workers=2,
             pin_memory=True,
@@ -185,7 +185,7 @@ def get_ds(config, ddp_enabled):
         train_sampler = None
         train_dataloader = DataLoader(
             train_ds,
-            batch_size=config['batch_size'],
+            batch_size=config['batch_size_base'],
             shuffle=True,
             num_workers=2,
             drop_last=True
@@ -210,21 +210,6 @@ def count_parameters(model):
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total}")
     print(f"Trainable parameters: {trainable}")
-
-def load_comet_model(device):
-    model_path = download_model("Unbabel/wmt22-comet-da")
-    comet_model = load_from_checkpoint(model_path)
-    comet_model.to(device)
-    comet_model.eval()
-    return comet_model
-
-def load_comet_model(device):
-    model_path = download_model("Unbabel/wmt22-comet-da")
-    comet_model = load_from_checkpoint(model_path)
-    comet_model.to(device)
-    comet_model.eval()
-    return comet_model
-
 
 def load_comet_model(device):
     model_path = download_model("Unbabel/wmt22-comet-da")
@@ -367,7 +352,7 @@ def train_model(config):
                 # Track hyperparameters and metadata
                 "train_size": config['train_size'],
                 "epochs": config['num_epochs'], 
-                "batch_size": config['batch_size'],
+                "batch_size": config['batch_size_max'],
                 "max_seq_len": config['train_seq_len'],
                 "hidden_dim": config['d_model'],
                 "beam_size": config['beam_size'],      
@@ -428,6 +413,8 @@ def train_model(config):
 
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
+    
+    number_of_iteration = config['batch_size_max'] // config['batch_size_base']
 
     if config['test_only'] == False:
         for epoch in range(initial_epoch, config['num_epochs']):
@@ -441,15 +428,16 @@ def train_model(config):
                 batch_iterator = train_dataloader
 
             losses = []
+            
+            optimizer.zero_grad(set_to_none=True)
 
-            for batch in batch_iterator:
+            for i, batch in enumerate(batch_iterator):
                 encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
                 decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
                 encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
                 decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
                 label = batch['label'].to(device) # (B, seq_len)
-
-                optimizer.zero_grad(set_to_none=True)
+                    
 
                 # ===== Forward =====
                 # Autocast handles the casting (FP32 -> FP16 -> FP32) dynamically
@@ -462,16 +450,20 @@ def train_model(config):
                         proj_output.view(-1, tokenizer_tgt.get_vocab_size()), 
                         label.view(-1)
                     )
+                    loss = loss / number_of_iteration
 
                 # ===== Backprop =====
                 scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                scaler.step(optimizer)
-                scaler.update()
-                
-                scheduler.step()
-                global_step += 1
+                if (i + 1) % number_of_iteration == 0 or (i+1) == len(batch_iterator):
+                    scaler.unscale_(optimizer)  
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
+
+                    scheduler.step()
+                    global_step += 1
                 losses.append(loss.item())
                 
                 if local_rank == 0:

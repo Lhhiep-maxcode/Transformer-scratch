@@ -15,3 +15,10 @@ v4 (v6 on kaggle)/run-gw1sqh1m.wandb
 transformer_v5.zip
 transformer_v4.zip
 *.zip
+
+wandb/
+env/
+v4 (v6 on kaggle)/
+*.ipynb
+*.zip
+*.txt
