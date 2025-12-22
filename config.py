@@ -3,32 +3,38 @@ import re
 
 def get_config():
     return {
-        "train_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'], #C:\\Users\\Lenovo\\Downloads\\VSCODE_project\\Transformer-scratch\\English_Vietnamese_6.csv | /kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv
-        "test_path": ['/kaggle/input/machine-translation-en-vi/English_Vietnamese_1.csv'],
+        "train_path": ['/kaggle/input/machine-translation-en-vi-filtered/English_Vietnamese_1.csv', 
+                      '/kaggle/input/machine-translation-en-vi-filtered/English_Vietnamese_2.csv',
+                      '/kaggle/input/machine-translation-en-vi-filtered/English_Vietnamese_3.csv',
+                      '/kaggle/input/machine-translation-en-vi-filtered/English_Vietnamese_4.csv',
+                      '/kaggle/input/machine-translation-en-vi-filtered/English_Vietnamese_5.csv',
+                      '/kaggle/input/machine-translation-en-vi-filtered/English_Vietnamese_6.csv'],
+        "test_path": ['/kaggle/input/en-vi-100/en_vi_100.csv'],
         "test_only": False,
-        "train_size": 0.05,   
-        "val_size": 1 / 30000,     
+        "train_size": 0.9,   
+        "val_size": 0.0002,     
         "batch_size_max": 128,
         "batch_size_base": 64,
         "num_epochs": 20,
         "peak_lr": 7e-4,
-        "warmup_steps": 4000,
+        "warmup_steps": 6000,
         "train_seq_len": 102,
-        "test_seq_len": 302,
+        "test_seq_len": 502,
         "d_model": 512,
         "beam_size": 5,
-        "preload_path": ['/kaggle/input/Transformers pre-train/v4_tmodel_18.pt'],
+        "preload_path": None,
         "model_folder": "weights",
         "model_basename": "tmodel_",
-        "tokenizer_file": "wordlevel_tokenizer_{0}.json",
+        "tokenizer_file": "/kaggle/input/machine-translation-en-vi/BPE_tokenizer_{0}.json",
         "experiment_name": "runs/tmodel",
         "random_seed": 42,
         # wandb log
-        "wandb_key": "None", 
+        "wandb_key": None, 
         "wandb_project_name": "Transformer from scratch",
-        "wandb_experiment_name": "V6: V2 + accumulate grad + batch size 128",
+        "wandb_experiment_name": "v10: Final version",
         "wandb_experiment_id": None,
     }
+
 
 def get_weights_file_path(config, epoch: int):
     model_folder = config['model_folder']

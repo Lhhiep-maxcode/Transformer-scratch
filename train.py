@@ -79,6 +79,9 @@ def get_ds(config, ddp_enabled):
     
     en_list, vi_list = shuffle_parallel_lists(en_list, vi_list, seed=config['random_seed'])
 
+    if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
+        print('Getting/Building tokenizer...')
+
     # get tokenizer
     if ddp_enabled:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -96,6 +99,9 @@ def get_ds(config, ddp_enabled):
     else:
         tokenizer_tgt = get_or_build_tokenizer(config, vi_list, 'vi')
         tokenizer_src = get_or_build_tokenizer(config, en_list, 'en')
+    
+    if not ddp_enabled or (ddp_enabled and int(os.environ.get("LOCAL_RANK", 0)) == 0):
+        print("Filtering long sentences...")
     
     total_data = len(en_list)
 
@@ -193,7 +199,6 @@ def get_ds(config, ddp_enabled):
 
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
     test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
-    print('='*30)
 
     return train_dataloader, val_dataloader, test_dataloader, tokenizer_src, tokenizer_tgt, train_sampler
     
@@ -477,9 +482,9 @@ def train_model(config):
                         run.log({'Train loss (10 steps)': loss.item(), 'lr(10 steps)': current_lr})
 
             avg_loss = torch.mean(torch.tensor(losses))
-            print('| Average Training-Loss : {:.4f}'.format(avg_loss))
 
             if config['wandb_key'] is not None and local_rank == 0:
+                print('| Average Training-Loss : {:.4f}'.format(avg_loss))
                 run.log({'Train loss (epoch)': avg_loss})
                 run_validation(
                     model, val_dataloader, tokenizer_src, 
@@ -488,6 +493,7 @@ def train_model(config):
                     comet_model, num_examples=100
                 )
             elif local_rank == 0:
+                print('| Average Training-Loss : {:.4f}'.format(avg_loss))
                 run_validation(
                     model, val_dataloader, tokenizer_src, 
                     tokenizer_tgt, config["train_seq_len"], device, 
