@@ -182,7 +182,6 @@ def get_ds(config, ddp_enabled):
     if ddp_enabled:
         train_sampler = DistributedSampler(train_ds)
         val_sampler = DistributedSampler(val_ds, shuffle=False)
-        test_sampler = DistributedSampler(test_ds, shuffle=False)
         train_dataloader = DataLoader(
             train_ds,
             batch_size=config['batch_size_base'],
@@ -194,7 +193,6 @@ def get_ds(config, ddp_enabled):
     else:
         train_sampler = None
         val_sampler = None
-        test_sampler = None
         train_dataloader = DataLoader(
             train_ds,
             batch_size=config['batch_size_base'],
@@ -204,7 +202,7 @@ def get_ds(config, ddp_enabled):
         )
 
     val_dataloader = DataLoader(val_ds, batch_size=1, sampler=val_sampler, shuffle=False)
-    test_dataloader = DataLoader(test_ds, batch_size=1, sampler=test_sampler, shuffle=False)
+    test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False)
 
     return (train_dataloader, val_dataloader, test_dataloader, 
             tokenizer_src, tokenizer_tgt, train_sampler)
