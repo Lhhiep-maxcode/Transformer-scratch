@@ -1,0 +1,1 @@
+Reports on the application and improvements, along with measurement data after the improvements to the Transformer for the machine translation task (from English to Vietnamese), are all covered in this paper: https://drive.google.com/file/d/1FlPOO2QqkKo-cZwVr55NxJyxiqYWzXoD/view?usp=sharing
